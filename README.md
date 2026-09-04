@@ -102,6 +102,7 @@ but unencrypted; use it on the trusted local network.
 bun run check
 bun runtime/node_modules/typescript/bin/tsc --noEmit
 bun run 3ds --pocket-only
+bun runtime/tools/wasm.ts
 bun scripts/sim.ts
 ```
 
