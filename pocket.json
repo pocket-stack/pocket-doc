@@ -1,0 +1,47 @@
+{
+  "pocket": 2,
+  "id": "dev.pocket-stack.folio",
+  "name": "pocket-folio",
+  "title": "Pocket Folio",
+  "version": "0.1.0",
+  "engine": {
+    "capabilities": {
+      "requires": [
+        "io.offload",
+        "text.glyphs.baked",
+        "input.buttons",
+        "display.auxiliary",
+        "input.touch.auxiliary"
+      ],
+      "enhances": [
+        "input.analog.left"
+      ]
+    }
+  },
+  "app": {
+    "entry": "app/main.tsx",
+    "output": "pocketfolio-main",
+    "framework": "solid",
+    "viewport": {
+      "fixed": {
+        "logical": [
+          400,
+          240
+        ],
+        "presentation": "native"
+      }
+    },
+    "surfaces": {
+      "auxiliary": {
+        "fixed": {
+          "logical": [
+            320,
+            240
+          ],
+          "presentation": "native"
+        }
+      }
+    }
+  },
+  "$schema": "https://pocketjs.dev/schema/pocket-2.json"
+}
