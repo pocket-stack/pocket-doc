@@ -17,7 +17,10 @@ describe("Mac library", () => {
     try {
       expect(f.library.list().total).toBe(3); expect(f.library.list("中文笔记").total).toBe(3);
       const doc = f.library.open(1); expect(doc.rows).toBeGreaterThan(1000);
-      expect(f.library.tile(1, doc.revision, 0).mask.length).toBe(2048);
+      expect(f.library.tile(1, doc.revision, 0).mask.length).toBe(1368);
+      expect(f.library.window(1, doc.revision, 0)).toHaveLength(12);
+      expect(() => f.library.window(1, "stale", 0)).toThrow();
+      expect(() => f.library.methods()["document.window"](JSON.stringify({ id: 1, revision: doc.revision, layout: "stale", first: 0 }))).toThrow("Layout changed");
       const rows = layout("# Title\n\n中文 😀\n").rows;
       expect(rows[2].start).toBe(9); expect(Buffer.from(raster(rows[2]), "base64").some(v => v !== 0)).toBe(true);
       expect(raster({ text: "中文", start: 0, end: 2, kind: 0 })).not.toBe(raster({ text: "□□", start: 0, end: 2, kind: 0 }));

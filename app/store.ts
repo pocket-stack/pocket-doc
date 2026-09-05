@@ -1,17 +1,25 @@
 import { createMemo, createSignal, onCleanup } from "solid-js";
 import { offload } from "@pocketjs/framework/offload";
+import { createResourceSlot, pending, ready, type ResourceState } from "@pocketjs/framework/resource-state";
 import { onFrame } from "@pocketjs/framework/lifecycle";
 import { BTN } from "@pocketjs/framework/input";
 import { createScroller, bindDpadScroll } from "@pocketjs/framework/kinetics";
 import { getOps } from "@pocketjs/framework/host";
 import { uploadLine } from "./tiles.ts";
-import { sourceWindow } from "./editor.ts";
-type FileRow = { id: number; title: string; bytes: number };
+import { sourceRows, sourceWindow } from "./editor.ts";
+import { chordAction, heldBank, moveListSelection, type Action, type Bank } from "./commands.ts";
+import { FILE_H, LINE_H, SOURCE_COLUMNS, VIEW_H } from "../shared/layout.ts";
+export type FileRow = { id: number; title: string; bytes: number };
 type Document = { id: number; title: string; revision: string; layout: string; rows: number; chars: number; mini: number[]; outline: { row: number; title: string }[]; links: string[] };
 type Draft = { start: number; end: number; text: string; revision: string };
+export type RowSpec = { row: number; kind: number; columns?: number[]; header?: boolean };
+export type Tile = { handle: number; kind: number; start: number };
+
 export function createFolio() {
   const io = offload();
-  const [mode, setMode] = createSignal<"library" | "read" | "edit" | "search">("library");
+  const [mode, setMode] = createSignal<"read" | "edit" | "search">("read");
+  const [focus, setFocus] = createSignal<"library" | "document">("library");
+  const [menu, setMenu] = createSignal<Bank>();
   const [status, setStatus] = createSignal("Waiting for Mac...");
   const [online, setOnline] = createSignal(false);
   const [total, setTotal] = createSignal(0);
@@ -25,82 +33,112 @@ export function createFolio() {
   const [selected, setSelected] = createSignal(0);
   const [saving, setSaving] = createSignal(false);
   const [dirty, setDirty] = createSignal(false);
-  const tiles = new Map<number, { handle: number; kind: number; start: number }>();
+  const [selecting, setSelecting] = createSignal(false);
+  const [anchor, setAnchor] = createSignal(0);
+  const [confirmDiscard, setConfirmDiscard] = createSignal(false);
+  const tiles = new Map<number, Tile>();
+  const tileResources = new Map<number, ReturnType<typeof createResourceSlot<Tile>>>();
+  const rowSpecs = new Map<number, RowSpec>();
   const files = new Map<number, FileRow>();
   const textTiles = new Map<string, number>();
-  const sourceLines = createMemo(() => sourceWindow(draft()?.text ?? "", caret()));
+  const editorRows = createMemo(() => sourceRows(draft()?.text ?? "", caret(), SOURCE_COLUMNS));
+  const sourceLines = createMemo(() => sourceWindow(draft()?.text ?? "", caret(), SOURCE_COLUMNS));
+  const selection = createMemo(() => selecting() ? [Math.min(anchor(), caret()), Math.max(anchor(), caret())] as const : [caret(), caret()] as const);
   const inflight = new Map<string, number>();
-  let generation = 0, previous = 0, ticks = 0, lastSession = 0, retryAt = 0, op = "", editReturn = 0;
-  const scroll = createScroller({ max: () => Math.max(0, (doc()?.rows ?? 0) * 20 - 196), extent: () => 196 });
-  const libraryScroll = createScroller({ max: () => Math.max(0, total() * 24 - 192), extent: () => 192 });
-  const activeScroll = () => mode() === "library" ? libraryScroll : scroll;
-  bindDpadScroll(scroll, { active: () => mode() === "read", stepPx: 7, nubPx: 12 });
+  let generation = 0, previous = 0, ticks = 0, lastSession = 0, retryAt = 0, op = "", clipboard = "", navHeld = 0;
+  const scroll = createScroller({ max: () => Math.max(0, (doc()?.rows ?? 0) * LINE_H - VIEW_H), extent: () => VIEW_H });
+  const libraryScroll = createScroller({ max: () => Math.max(0, total() * FILE_H - VIEW_H), extent: () => VIEW_H });
+  const activeScroll = () => focus() === "library" ? libraryScroll : scroll;
+  bindDpadScroll(scroll, { active: () => focus() === "document" && mode() === "read", stepPx: 7, nubPx: 12 });
   const bump = () => setVersion(v => v + 1);
   const clearPending = () => { generation++; for (const id of inflight.values()) io.cancel(id); inflight.clear(); };
-  const request = (key: string, method: string, data: unknown, receive: (p: any) => void) => {
-    if (!online() || inflight.has(key) || ticks < retryAt) return false;
+  const cancelSpatial = (pane?: "library" | "document") => {
+    for (const [key, id] of inflight) {
+      if (key.startsWith("text:") || (pane !== "document" && key.startsWith("list:")) ||
+          (pane !== "library" && (key.startsWith("tile:") || key.startsWith("window:")))) {
+        io.cancel(id); inflight.delete(key);
+      }
+    }
+  };
+  const request = (key: string, method: string, data: unknown, receive: (p: any) => void, fail?: (reason: string) => void) => {
+    // User commands can replace speculative reads, including when all slots are occupied.
+    if (!/^(list:|text:|tile:|window:)/.test(key) && inflight.size >= 4) cancelSpatial();
+    if (!online() || inflight.has(key) || inflight.size >= 4 || ticks < retryAt) return false;
     const gen = generation;
     let id = 0;
-    try { id = io.request(method, JSON.stringify(data), result => {
-      inflight.delete(key);
-      if (gen !== generation) return;
-      if (!result.ok) { setStatus(result.error); retryAt = ticks + 90; setSaving(false); return; }
-      try { receive(JSON.parse(result.value)); } catch { setStatus("Invalid provider response"); }
-    });
+    try {
+      id = io.request(method, JSON.stringify(data), result => {
+        if (inflight.get(key) === id) inflight.delete(key);
+        if (gen !== generation) return;
+        if (!result.ok) { setStatus(result.error); retryAt = ticks + 90; setSaving(false); fail?.(result.error); return; }
+        try { receive(JSON.parse(result.value)); }
+        catch (error) { const message = error instanceof Error ? error.message : "Invalid provider response"; setStatus(message); fail?.(message); }
+      });
     } catch (error) { setStatus(error instanceof Error ? error.message : "Request exceeds budget"); return false; }
     if (id) inflight.set(key, id);
     return !!id;
+  };
+  const clearTiles = () => {
+    for (const tile of tiles.values()) getOps().freeTexture?.(tile.handle);
+    for (const resource of tileResources.values()) resource.dispose();
+    tiles.clear(); tileResources.clear(); rowSpecs.clear(); bump();
   };
   const list = (offset = 0) => request(`list:${offset}`, "library.list", { offset, query: query() }, p => {
     setTotal(p.total);
     for (let i = 0; i < p.rows.length; i++) files.set(offset + i, p.rows[i]);
     while (files.size > 96) files.delete(files.keys().next().value!);
-    setStatus(`${p.total} documents on Mac`); bump();
+    bump();
+    if (!doc() && p.rows[0] && mode() !== "search") open(p.rows[0].id, false, false);
   });
-  const clearTiles = () => { for (const tile of tiles.values()) getOps().freeTexture?.(tile.handle); tiles.clear(); bump(); };
-  const open = (id: number, preserve = false) => {
-    if (dirty()) { setStatus("Save or discard the current draft before opening a document"); return; }
+  const open = (id: number, preserve = false, focusAfter = true) => {
+    if (dirty()) { setStatus("Save or discard the current draft first"); return; }
     clearPending();
     request("open", "document.open", { id }, p => {
-      clearTiles(); setDoc(p); setMode("read"); setDraft(undefined); setDirty(false); setSaving(false);
+      clearTiles(); setDoc(p); setMode("read"); setDraft(undefined); setDirty(false); setSaving(false); setSelecting(false);
+      if (focusAfter) setFocus("document");
       if (!preserve) scroll.scrollTo(0, { immediate: true });
-      setStatus("Loading document...");
+      setStatus("L: Library   R: Document");
     });
   };
-  const edit = () => {
-    const d = doc(); if (!d || mode() !== "read") return;
-    scroll.stop(); editReturn = Math.max(0, Math.floor(scroll.offset() / 20));
-    request("edit", "document.edit", { id: d.id, revision: d.revision, row: editReturn }, p => {
-      setDraft(p); setCaret(0); setMode("edit"); setDirty(false); op = ""; setStatus("Editing source excerpt");
+  const edit = (select = false) => {
+    const d = doc(); if (!d) return;
+    setFocus("document"); scroll.stop();
+    if (draft()) { setMode("edit"); if (select) { setAnchor(caret()); setSelecting(true); } return; }
+    request("edit", "document.edit", { id: d.id, revision: d.revision, row: Math.max(0, Math.floor(scroll.offset() / LINE_H)) }, p => {
+      setDraft(p); setCaret(0); setAnchor(0); setSelecting(select); setMode("edit"); setDirty(false); op = "";
+      setStatus(select ? "Slide on the right pad to select text" : "Editing source excerpt");
     });
+  };
+  const insert = (add: string) => {
+    if (saving()) return;
+    const d = draft(); if (!d) return;
+    const [from, to] = selection();
+    if (d.text.length - (to - from) + add.length > 768) { setStatus("Excerpt is full; save before continuing"); return; }
+    setDraft({ ...d, text: d.text.slice(0, from) + add + d.text.slice(to) });
+    setCaret(from + add.length); setAnchor(from + add.length); setSelecting(false); setDirty(true); op = "";
   };
   const key = (value: string) => {
     if (saving()) return;
     if (value === "SHIFT") { setShift(!shift()); return; }
     if (value === "#+=") { setSymbols(!symbols()); return; }
     if (value === "DONE") { mode() === "search" ? search() : save(); return; }
-    if (mode() === "search") { setQuery(q => value === "DEL" ? q.slice(0, -1) : (q + (value === "SPACE" ? " " : value)).slice(0, 80)); return; }
+    if (mode() === "search") { setQuery(q => value === "DEL" ? q.slice(0, -1) : (q + (value === "SPACE" ? " " : value === "ENTER" ? "" : value)).slice(0, 80)); return; }
     const d = draft(); if (!d) return;
-    let cursor = caret(), text = d.text;
     if (value === "DEL") {
-      const n = cursor > 1 && /[\uDC00-\uDFFF]/.test(text[cursor - 1]) ? 2 : 1;
-      if (cursor) { text = text.slice(0, cursor - n) + text.slice(cursor); cursor -= n; }
-    } else {
-      const add = value === "SPACE" ? " " : value === "ENTER" ? "\n" : shift() ? value.toUpperCase() : value;
-      if (text.length + add.length > 768) { setStatus("Excerpt is full; save before continuing"); return; }
-      text = text.slice(0, cursor) + add + text.slice(cursor); cursor += add.length; setShift(false);
-    }
-    setDraft({ ...d, text }); setCaret(cursor); setDirty(true); op = "";
+      const [from, to] = selection();
+      if (from !== to) { insert(""); return; }
+      const n = caret() > 1 && /[\uDC00-\uDFFF]/.test(d.text[caret() - 1]) ? 2 : 1;
+      if (caret()) { setAnchor(caret() - n); setSelecting(true); insert(""); }
+    } else { insert(value === "SPACE" ? " " : value === "ENTER" ? "\n" : shift() ? value.toUpperCase() : value); setShift(false); }
   };
   const moveCaret = (n: number) => {
     let next = Math.max(0, Math.min(draft()?.text.length ?? 0, caret() + n));
     if (/[\uDC00-\uDFFF]/.test(draft()?.text[next] ?? "")) next += n < 0 ? -1 : 1;
-    setCaret(next);
+    setCaret(next); if (!selecting()) setAnchor(next);
   };
   const save = () => {
     const d = doc(), e = draft(); if (!d || !e || saving()) return;
     if (!dirty()) { setMode("read"); return; }
-    // Reuse identity after an unknown outcome; editing again creates a new one.
     op ||= `${d.id}-${d.revision.slice(0, 16)}-${ticks}-${Math.floor(Math.random() * 1000000000)}`;
     const sent = request("save", "document.save", { ...e, id: d.id, op }, () => {
       setSaving(false); setDirty(false); setStatus("Saved on Mac"); open(d.id, true);
@@ -108,25 +146,63 @@ export function createFolio() {
     if (sent) { setSaving(true); setStatus("Saving on Mac..."); }
     else setStatus("Draft retained; reconnect to save");
   };
-  const search = () => { clearPending(); files.clear(); setTotal(0); setMode("library"); libraryScroll.scrollTo(0, { immediate: true }); setSelected(0); retryAt = 0; list(); };
-  const back = () => {
-    if (mode() === "edit") { if (dirty()) { setStatus("Draft retained. START saves; X returns to reading."); return; } setMode("read"); }
-    else { clearPending(); setMode("library"); }
+  const search = () => {
+    clearPending(); files.clear(); setTotal(0); setMode("read"); setFocus("library");
+    libraryScroll.scrollTo(0, { immediate: true }); setSelected(0); retryAt = 0; bump(); list();
   };
+  const ensureSelected = () => setSelected(moveListSelection(selected(), 0, libraryScroll.offset(), VIEW_H, total(), FILE_H));
   const activate = () => {
-    if (mode() === "library") { const file = files.get(selected()); if (file) open(file.id); }
-    else if (mode() === "read") { if (draft()) setMode("edit"); else edit(); }
+    if (focus() === "library") { ensureSelected(); const file = files.get(selected()); if (file) open(file.id); }
+    else edit();
   };
-  const jump = (fraction: number) => activeScroll().scrollTo(Math.max(0, Math.min(1, fraction)) * (mode() === "library" ? Math.max(0, total() * 24 - 192) : Math.max(0, (doc()?.rows ?? 0) * 20 - 196)), { immediate: true });
+  const jump = (fraction: number, pane = focus()) => {
+    setFocus(pane);
+    cancelSpatial(pane);
+    const target = pane === "library" ? libraryScroll : scroll;
+    const length = pane === "library" ? total() * FILE_H : (doc()?.rows ?? 0) * LINE_H;
+    target.scrollTo(Math.max(0, Math.min(1, fraction)) * Math.max(0, length - VIEW_H), { immediate: true });
+  };
   const nextHeading = (direction: number) => {
     const d = doc(); if (!d) return;
-    request("heading", "document.heading", { id: d.id, row: scroll.offset() / 20, direction }, p => scroll.scrollTo(p.row * 20));
+    request("heading", "document.heading", { id: d.id, row: scroll.offset() / LINE_H, direction }, p => scroll.scrollTo(p.row * LINE_H));
+  };
+  const followLink = () => { const name = doc()?.links[0]; if (name) request("link", "library.link", { name }, p => open(p.id)); };
+  const toggleSelect = () => {
+    if (mode() !== "edit") { edit(true); return; }
+    if (!selecting()) setAnchor(caret());
+    setSelecting(!selecting());
+  };
+  const perform = (action: Action) => {
+    if (action !== "discard") setConfirmDiscard(false);
+    switch (action) {
+      case "open": ensureSelected(); { const item = files.get(selected()); if (item) open(item.id); } break;
+      case "focus-list": setFocus("library"); break;
+      case "focus-document": setFocus("document"); break;
+      case "search": setMode("search"); setFocus("library"); break;
+      case "refresh": clearPending(); files.clear(); retryAt = 0; bump(); break;
+      case "edit": edit(); break;
+      case "read": setMode("read"); setStatus(dirty() ? "Draft retained; R+A resumes" : "L: Library   R: Document"); break;
+      case "save": save(); break;
+      case "link": followLink(); break;
+      case "select": toggleSelect(); break;
+      case "copy": { const [from, to] = selection(); clipboard = draft()?.text.slice(from, to) ?? ""; setStatus(clipboard ? "Selection copied" : "Select text to copy"); break; }
+      case "paste": if (mode() === "edit" && clipboard) insert(clipboard); else setStatus("Open the editor and copy text first"); break;
+      case "discard":
+        if (saving()) break;
+        if (!confirmDiscard()) { setConfirmDiscard(true); setStatus("Press ZL+Y again to discard the draft"); break; }
+        setDirty(false); setDraft(undefined); setSelecting(false); setMode("read"); setConfirmDiscard(false);
+        if (doc() && online()) open(doc()!.id, true); break;
+      case "top": jump(0, "document"); break;
+      case "end": jump(1, "document"); break;
+      case "heading": nextHeading(1); break;
+    }
   };
   onFrame(buttons => {
     ticks++; setOnline(io.connected());
     const session = io.session();
     if (session > 0 && session !== lastSession) {
       lastSession = session; clearPending(); retryAt = 0; setSaving(false);
+      setStatus(dirty() ? "Reconnected - draft retained" : "L: Library   R: Document");
       const current = doc();
       if (current) request("revalidate", "document.open", { id: current.id }, p => {
         if (current.revision !== p.revision || current.layout !== p.layout) {
@@ -136,72 +212,99 @@ export function createFolio() {
       });
     }
     const pressed = buttons & ~previous; previous = buttons;
-    if (mode() === "library") {
-      if (pressed & BTN.DOWN) setSelected(Math.min(total() - 1, selected() + 1));
-      if (pressed & BTN.UP) setSelected(Math.max(0, selected() - 1));
-      if (pressed & (BTN.DOWN | BTN.UP)) libraryScroll.chaseTo(Math.max(0, selected() - 3) * 24);
-      if (pressed & BTN.LTRIGGER) { setSelected(Math.max(0, selected() - 100)); libraryScroll.scrollTo(selected() * 24); }
-      if (pressed & BTN.RTRIGGER) { setSelected(Math.min(total() - 1, selected() + 100)); libraryScroll.scrollTo(selected() * 24); }
-    } else if (mode() === "edit") {
-      if (pressed & BTN.LEFT) moveCaret(-1); if (pressed & BTN.RIGHT) moveCaret(1);
-      if (pressed & BTN.UP) moveCaret(-48); if (pressed & BTN.DOWN) moveCaret(48);
-      if (pressed & BTN.CIRCLE) key("ENTER"); if (pressed & BTN.CROSS) key("DEL");
-      if (pressed & BTN.START) save();
-    } else {
-      if (pressed & BTN.LTRIGGER) nextHeading(-1); if (pressed & BTN.RTRIGGER) nextHeading(1);
+    const bank = heldBank(buttons); setMenu(bank);
+    const action = chordAction(bank, pressed);
+    if (action) perform(action);
+    if (bank || mode() !== "edit" || focus() === "library") {
+      if (pressed & BTN.LEFT) setFocus("library");
+      if (pressed & BTN.RIGHT) setFocus("document");
     }
-    if (mode() !== "edit" && pressed & BTN.CIRCLE) activate();
-    if (mode() !== "edit" && pressed & BTN.CROSS) back();
-    if (pressed & BTN.TRIANGLE && mode() === "edit") { setMode("read"); setStatus("Draft retained. A resumes editing."); }
-    if (pressed & BTN.SQUARE && mode() === "read") { const name = doc()?.links[0]; if (name) request("link", "library.link", { name }, p => open(p.id)); }
-    if (pressed & BTN.SELECT && mode() === "library") setMode("search");
+    navHeld = buttons & (BTN.UP | BTN.DOWN) ? navHeld + 1 : 0;
+    const nav = pressed | (navHeld > 18 && navHeld % 6 === 0 ? buttons & (BTN.UP | BTN.DOWN) : 0);
+    if (focus() === "library" && nav & (BTN.UP | BTN.DOWN)) {
+      libraryScroll.stop();
+      setSelected(moveListSelection(selected(), nav & BTN.DOWN ? 1 : -1, libraryScroll.offset(), VIEW_H, total(), FILE_H));
+      const top = selected() * FILE_H, offset = libraryScroll.offset();
+      if (top < offset) libraryScroll.scrollTo(top);
+      else if (top + FILE_H > offset + VIEW_H) libraryScroll.scrollTo(top + FILE_H - VIEW_H);
+    }
+    if (!bank) {
+      if (mode() === "edit" && focus() === "document") {
+        if (pressed & BTN.LEFT) moveCaret(-1); if (pressed & BTN.RIGHT) moveCaret(1);
+        if (nav & BTN.UP) moveCaret(-SOURCE_COLUMNS); if (nav & BTN.DOWN) moveCaret(SOURCE_COLUMNS);
+        if (pressed & BTN.CIRCLE) key("ENTER"); if (pressed & BTN.CROSS) key("DEL");
+        if (pressed & BTN.START) save();
+        if (pressed & BTN.TRIANGLE) perform("read");
+      } else {
+        if (pressed & BTN.CIRCLE) mode() === "search" ? search() : activate();
+        if (pressed & BTN.CROSS) mode() === "search" ? setMode("read") : setFocus("library");
+        if (pressed & BTN.SELECT) perform("search");
+      }
+    }
     scroll.step(); libraryScroll.step();
     if (!online()) { if (!saving()) setStatus(dirty() ? "Offline - draft retained" : "Waiting for paired Mac..."); return; }
-    const visibleText = mode() === "edit" ? sourceLines().map(line => line.replace("\u0001", "")) : mode() === "library" ? Array.from({ length: 9 }, (_, n) => files.get(Math.max(0, Math.floor(libraryScroll.offset() / 24)) + n)?.title.slice(0, 36) ?? "") : [];
+    const firstFile = Math.max(0, Math.floor(libraryScroll.offset() / FILE_H)), page = Math.floor(firstFile / 12) * 12;
+    if (!files.has(firstFile)) list(page);
+    if (total() > page + 12 && !files.has(page + 12)) list(page + 12);
+    const visibleText = [
+      ...Array.from({ length: 9 }, (_, n) => files.get(firstFile + n)?.title.slice(0, 17) ?? ""),
+      ...(mode() === "edit" ? editorRows().map(row => row.text) : []),
+    ];
     for (const line of visibleText) {
       if (!/[^\x00-\x7f]/.test(line) || textTiles.has(line) || inflight.size >= 4) continue;
       if (request(`text:${line}`, "text.tile", { text: line }, p => {
         const handle = uploadLine(p.mask, 3); if (handle < 0) return;
         textTiles.set(line, handle);
-        if (textTiles.size > 12) { const key = textTiles.keys().next().value!; getOps().freeTexture?.(textTiles.get(key)!); textTiles.delete(key); }
+        while (textTiles.size > 20) { const key = textTiles.keys().next().value!; getOps().freeTexture?.(textTiles.get(key)!); textTiles.delete(key); }
         bump();
       })) break;
     }
-    if (mode() === "library") {
-      const first = Math.max(0, Math.floor(libraryScroll.offset() / 24));
-      const page = Math.floor(first / 12) * 12;
-      if (!files.has(first)) list(page);
-      if (total() > page + 12 && !files.has(page + 12)) list(page + 12);
-    } else if (mode() === "read") {
-      const d = doc(); if (!d) return;
-      const first = Math.max(0, Math.floor(scroll.offset() / 20));
-      // Visible first, then ahead of motion, then behind. At most two new
-      // requests per tick and four tiles in flight leave room for editing.
-      let issued = 0;
-      const ahead = scroll.velocity() >= 0;
-      for (let n = 0; n < 60 && inflight.size < 4 && issued < 2; n++) {
-        const row = n < 12 ? first + n : ahead ? (n < 44 ? first + n : first - (n - 43)) : (n < 44 ? first - (n - 11) : first + n - 32);
-        if (row < 0 || row >= d.rows || tiles.has(row) || inflight.has(`tile:${row}`)) continue;
-        if (request(`tile:${row}`, "document.tile", { id: d.id, revision: d.revision, layout: d.layout, row }, p => {
-          const handle = uploadLine(p.mask, p.kind);
-          if (handle < 0) { setStatus("Texture budget exhausted"); return; }
-          tiles.set(row, { handle, kind: p.kind, start: p.start });
-          while (tiles.size > 72) {
-            let victim = -1, distance = -1;
-            for (const k of tiles.keys()) if (Math.abs(k - first - 5) > distance) { victim = k; distance = Math.abs(k - first - 5); }
-            getOps().freeTexture?.(tiles.get(victim)!.handle); tiles.delete(victim);
-          }
-          bump(); setStatus(dirty() ? "Draft retained - A resumes" : `${Math.round((first + 1) / d.rows * 100)}%  |  ${tiles.size} cached lines`);
-        })) issued++;
+    const d = doc(); if (!d || mode() === "edit") return;
+    const first = Math.max(0, Math.floor(scroll.offset() / LINE_H));
+    const metadata = Math.floor(first / 12) * 12;
+    for (const from of [metadata, metadata + 12]) {
+      if (from >= d.rows || rowSpecs.has(from)) continue;
+      request(`window:${from}`, "document.window", { id: d.id, revision: d.revision, layout: d.layout, first: from }, specs => {
+        for (const spec of specs) rowSpecs.set(spec.row, spec);
+        while (rowSpecs.size > 96) rowSpecs.delete(rowSpecs.keys().next().value!);
+        bump();
+      });
+    }
+    let issued = 0;
+    for (let n = 0; n < 60 && inflight.size < 4 && issued < 2; n++) {
+      const row = n < 12 ? first + n : scroll.velocity() >= 0 ? (n < 44 ? first + n : first - (n - 43)) : (n < 44 ? first - (n - 11) : first + n - 32);
+      if (row < 0 || row >= d.rows || tiles.has(row) || inflight.has(`tile:${row}`)) continue;
+      const resource = tileResources.get(row) ?? createResourceSlot<Tile>(bump);
+      let ticket = 0;
+      if (request(`tile:${row}`, "document.tile", { id: d.id, revision: d.revision, layout: d.layout, row }, p => {
+        const handle = uploadLine(p.mask, p.kind);
+        if (handle < 0) { resource.reject(ticket, "Texture unavailable"); return; }
+        const tile = { handle, kind: p.kind, start: p.start };
+        if (!resource.resolve(ticket, tile)) { getOps().freeTexture?.(handle); return; }
+        tiles.set(row, tile);
+        bump();
+      }, error => resource.reject(ticket, error))) {
+        tileResources.set(row, resource); ticket = resource.begin(); issued++;
+        while (tileResources.size > 72) {
+          let victim = -1, distance = -1;
+          const center = Math.floor(scroll.offset() / LINE_H) + 5;
+          for (const candidate of tileResources.keys()) if (!inflight.has(`tile:${candidate}`) && Math.abs(candidate - center) > distance) { victim = candidate; distance = Math.abs(candidate - center); }
+          if (victim < 0) break;
+          const old = tiles.get(victim); if (old) getOps().freeTexture?.(old.handle);
+          tiles.delete(victim); tileResources.get(victim)?.dispose(); tileResources.delete(victim);
+        }
+        bump();
       }
     }
   });
   onCleanup(() => { clearPending(); clearTiles(); for (const handle of textTiles.values()) getOps().freeTexture?.(handle); });
-  return { mode, setMode, status, online, total, version, doc, draft, caret, query, shift, symbols, selected, setSelected,
-    tiles, files, textTiles, sourceLines, scroll, libraryScroll, activeScroll, dirty, saving, key, moveCaret, save, search, back, activate, edit, jump, open, nextHeading,
-    followLink: () => { const name = doc()?.links[0]; if (name) request("link", "library.link", { name }, p => open(p.id)); },
-    discard: () => { if (saving()) return; setDirty(false); setDraft(undefined); setMode("read"); setStatus("Draft discarded"); if (doc() && online()) open(doc()!.id, true); },
-    diagnostics: () => ({ cachedTiles: tiles.size, pending: inflight.size, offset: scroll.offset(), frame: ticks }),
+  return {
+    mode, setMode, focus, setFocus, menu, status, online, total, version, doc, draft, caret, query, shift, symbols, selected, setSelected,
+    tiles, rowSpecs, files, textTiles, editorRows, sourceLines, scroll, libraryScroll, activeScroll, dirty, saving, selecting, selection, confirmDiscard,
+    key, moveCaret, save, search, activate, edit, jump, open, nextHeading, followLink, toggleSelect, perform,
+    rowResource: (row: number): ResourceState<Tile> => { version(); return tileResources.get(row)?.state() ?? pending(); },
+    fileResource: (index: number): ResourceState<FileRow> => { version(); const file = files.get(index); return file ? ready(file) : pending(); },
+    diagnostics: () => ({ cachedTiles: tiles.size, resourceSlots: tileResources.size, pending: inflight.size, offset: scroll.offset(), frame: ticks }),
   };
 }
 export type Folio = ReturnType<typeof createFolio>;

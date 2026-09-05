@@ -1,8 +1,9 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { createWasmUi } from "../runtime/hosts/web/wasm-ops.js";
 import { NODE_TYPE, PROP, ENUMS, BTN } from "../runtime/contracts/spec/spec.ts";
 import { encodePNG } from "../runtime/tests/png.ts";
 import { Library } from "../host/library.ts";
+import { layout } from "../host/layout.ts";
 import { dispatchOffload } from "../runtime/tools/offload-provider.ts";
 import type { Folio } from "../app/store.ts";
 const library = new Library("data/library"); library.index();
@@ -15,40 +16,104 @@ ops.setProp(auxiliary, PROP.insetL, 40); ops.setProp(auxiliary, PROP.insetT, 240
 ops.setProp(auxiliary, PROP.width, 320); ops.setProp(auxiliary, PROP.height, 240);
 ops.insertBefore(1, auxiliary, 0);
 ops.__auxiliarySurface = { root: auxiliary, w: 320, h: 240 };
-const requests: string[] = [], replies: { at: number; raw: string }[] = [];
-let tick = 0, connected = 1;
+const requests: string[] = [], replies: { at: number; raw: string; tile: boolean }[] = [];
+let tick = 0, connected = -1, withholdTiles = false, maxPending = 0, maxTiles = 0, maxSlots = 0;
+const checks: string[] = [];
+function check(condition: unknown, message: string) { if (!condition) throw new Error(message); checks.push(message); }
 Object.assign(globalThis, {
   ui: ops, __pak: await Bun.file("runtime/dist/3ds/guest/pocketfolio-main.pak").arrayBuffer(), __simHz: 60,
-  offload: { session: () => connected, submit: (raw: string) => { requests.push(raw); return true; }, take: () => replies[0]?.at <= tick ? replies.shift()!.raw : undefined },
+  offload: {
+    session: () => connected, submit: (raw: string) => { requests.push(raw); return true; },
+    take: () => { const i = replies.findIndex(reply => reply.at <= tick && !(withholdTiles && reply.tile)); return i < 0 ? undefined : replies.splice(i, 1)[0].raw; },
+  },
 });
 (0, eval)(await Bun.file("runtime/dist/3ds/guest/pocketfolio-main.js").text());
 const s = (globalThis as any).__folio as Folio;
-const times: number[] = [];
-async function frames(n: number, buttons = 0) {
+let hit: number | undefined;
+async function frames(n: number, buttons = 0, touch?: [number, number]) {
+  if (touch && hit === undefined) { wasm.render(); hit = ops.hitTestBounds!(touch[0] + 40, touch[1] + 240); }
+  if (!touch) hit = undefined;
   for (let i = 0; i < n; i++) {
     tick++;
-    const begin = performance.now(); (globalThis as any).frame(buttons, 0x8080, [], [], []); wasm.tick();
-    times.push(performance.now() - begin);
-    // Provider work deliberately occurs outside the timed UI transaction.
-    for (const raw of requests.splice(0)) replies.push({ at: tick + 4, raw: JSON.stringify(await dispatchOffload(library.methods(), JSON.parse(raw))) });
+    (globalThis as any).frame(buttons, 0x8080, touch ? [touch[0] | touch[1] << 9] : [], touch ? [hit] : [], touch ? [1] : []);
+    wasm.tick();
+    const d = s.diagnostics(); maxPending = Math.max(maxPending, d.pending); maxTiles = Math.max(maxTiles, d.cachedTiles); maxSlots = Math.max(maxSlots, d.resourceSlots);
+    // Host work is explicit and separate. This replay verifies behavior, not hardware performance.
+    for (const raw of requests.splice(0)) {
+      const req = JSON.parse(raw);
+      if (req.method === "document.save") throw new Error("Replay must not write the user's test library");
+      replies.push({ at: tick + 4, tile: req.method === "document.tile", raw: JSON.stringify(await dispatchOffload(library.methods(), req)) });
+    }
   }
 }
+async function tap(x: number, y: number) { await frames(1, 0, [x,y]); await frames(1); }
+async function press(button: number) { await frames(1, button); await frames(1); }
 mkdirSync("dist/qa", { recursive: true });
-function shot(name: string) { const rgba = wasm.render(); Bun.write(`dist/qa/${name}.png`, encodePNG(rgba, 400, 480)); }
-await frames(35); shot("library");
-if (s.total() !== 1000) throw new Error(`Library not loaded: ${s.status()}`);
-await frames(1, BTN.CIRCLE); await frames(160); shot("read");
-if (s.mode() !== "read" || s.tiles.size < 20) throw new Error(`Reader failed: ${s.status()}`);
-s.scroll.beginDrag(); s.scroll.drag(100); s.scroll.endDrag(1400);
-const before = s.scroll.offset(); connected = -1;
-await frames(25); const after = s.scroll.offset(); shot("offline-scroll");
-if (after <= before + 100) throw new Error("Inertia stopped when provider disconnected");
-connected = 2; await frames(120);
-s.scroll.scrollTo(0, { immediate: true }); await frames(80);
-s.edit(); await frames(35); s.key("Z"); await frames(2); shot("edit");
-if (!s.dirty() || !s.draft()?.text.startsWith("Z")) throw new Error("Edit did not retain local input");
-connected = -2; await frames(20);
-if (!s.dirty() || !s.draft()?.text.startsWith("Z")) throw new Error("Disconnect lost draft");
-times.sort((a,b) => a-b);
-const evidence = { frames: tick, simulatedLatencyFrames: 4, inertiaBefore: before, inertiaAfter: after, ...s.diagnostics(), uiMs: { p50: times[Math.floor(times.length*.5)], p95: times[Math.floor(times.length*.95)], max: times.at(-1) }, note: "Wasm simulation on Mac; hardware timing measured separately. No saves performed in real test library." };
+async function shot(name: string) {
+  const rgba = wasm.render().slice(); await Bun.write(`dist/qa/${name}.png`, encodePNG(rgba, 400, 480)); return rgba;
+}
+
+await frames(2); const loadingA = await shot("loading-a");
+await frames(22); const loadingB = await shot("loading-b");
+check(Buffer.compare(loadingA, loadingB) !== 0, "Skeleton animation advances while the host is offline");
+connected = 1; await frames(220); await shot("read");
+check(s.total() === 1000 && s.doc()?.id === 1 && s.tiles.size > 20, "Both panes load from the full 1000-file library");
+const original = s.scroll.offset();
+await frames(1, BTN.LTRIGGER); await shot("menu-library");
+check(s.menu() === "library" && s.scroll.offset() === original, "Holding L opens its menu without jumping");
+await frames(1); await frames(1, BTN.RTRIGGER); await shot("menu-document");
+check(s.menu() === "document" && s.scroll.offset() === original, "Holding R opens its menu without jumping");
+await frames(1);
+
+await tap(17, 132); await frames(40);
+const listJump = s.libraryScroll.offset();
+await press(BTN.DOWN);
+check(s.selected() === Math.floor(listJump / 24) && Math.abs(s.libraryScroll.offset() - listJump) < 24,
+  "D-pad after minimap selects the first visible file without returning to the old selection");
+check(s.scroll.offset() === original, "Library minimap leaves document offset unchanged");
+s.libraryScroll.stop(); s.jump(0, "library"); await frames(40);
+await frames(1, 0, [75, 180]); await frames(1, 0, [75, 160]); await frames(1, 0, [75, 140]); await frames(1);
+check(s.libraryScroll.offset() > 20 && s.scroll.offset() === original, "Left touchpad scrolls only the file list");
+s.libraryScroll.stop(); s.jump(0, "library"); await frames(40);
+await frames(1, 0, [230, 165]); await frames(1, 0, [230, 145]); await frames(1, 0, [230, 125]); await frames(1);
+const before = s.scroll.offset(); connected = -1; await frames(25); const after = s.scroll.offset();
+check(after > before + 100 && s.libraryScroll.offset() === 0, "Right touchpad inertia continues through disconnection without moving the list");
+await shot("offline-scroll");
+connected = 2; await frames(120); s.scroll.stop();
+
+const tableRow = layout(readFileSync("data/library/note-0001.md", "utf8")).rows.findIndex((row, i) => i > 120 && row.table?.header);
+check(tableRow > 120, "Fixture contains a table outside the initial prefetch window");
+withholdTiles = true;
+s.jump(tableRow * 20 / ((s.doc()!.rows * 20) - 194), "document"); await frames(20);
+check(!!s.rowSpecs.get(tableRow)?.columns && s.rowResource(tableRow).status === "pending", "Table geometry arrives independently of its pending image");
+await shot("table-loading"); const tableOffset = s.scroll.offset();
+withholdTiles = false; await frames(110); await shot("table");
+check(s.rowResource(tableRow).status === "ready" && s.scroll.offset() === tableOffset, "Table image replaces fallback without moving its viewport");
+
+s.jump(0, "document"); await frames(100);
+await press(BTN.RTRIGGER | BTN.CIRCLE); await frames(35);
+check(s.mode() === "edit" && s.caret() === 0, "R+A opens editor once and does not also insert a newline");
+await tap(55, 44); // w, via actual auxiliary touch hit facts
+check(s.dirty() && s.draft()?.text.startsWith("w"), "Touch keyboard updates the draft immediately");
+await tap(183, 219); // embedded Select entry
+await frames(1, 0, [205, 186]); await frames(1, 0, [225, 186]); await frames(1, 0, [245, 186]); await frames(1);
+check(s.selecting() && s.selection()[1] > s.selection()[0], "Embedded Select and right pad drag create a source selection");
+await frames(1, BTN.ZL); await shot("selection"); await frames(1);
+const selection = s.draft()!.text.slice(...s.selection());
+await press(BTN.ZL | BTN.CROSS); // copy; no backspace leak
+const copiedSource = s.draft()!.text;
+check(copiedSource.includes(selection), "ZL+B copies without invoking the plain B delete action");
+s.toggleSelect(); s.moveCaret(s.draft()!.text.length);
+await press(BTN.ZL | BTN.TRIANGLE);
+check(s.draft()!.text.endsWith(selection), "ZL+X pastes the selected text locally");
+await shot("edit");
+const retained = s.draft()!.text; connected = -2; await frames(20);
+check(s.dirty() && s.draft()?.text === retained, "Disconnect preserves the unsaved draft");
+await press(BTN.LTRIGGER | BTN.SELECT);
+await frames(1, BTN.LTRIGGER | BTN.SELECT);
+check(s.menu() === "selection", "L+SELECT reaches the selection bank on older 3DS hardware");
+await frames(1);
+check(maxPending <= 4 && maxTiles <= 72 && maxSlots <= 72, "Pending requests and document resource caches stay bounded throughout navigation");
+const evidence = { frames: tick, simulatedLatencyFrames: 4, checks, inertiaBefore: before, inertiaAfter: after, maxPending, maxTiles, maxSlots,
+  ...s.diagnostics(), note: "Compiled guest + Wasm replay on Mac. No hardware performance claim. No saves performed in real test library." };
 await Bun.write("dist/qa/sim.json", JSON.stringify(evidence, null, 2)); console.log(evidence); library.close();

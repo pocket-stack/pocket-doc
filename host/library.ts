@@ -90,6 +90,15 @@ export class Library {
     const r = d.rows[row];
     return { row, kind: r.kind, start: r.start, mask: raster(r) };
   }
+  window(id: number, revision: string, first: number) {
+    const d = this.document(id);
+    if (d.revision !== revision) throw new Error("Revision changed");
+    integer(first, d.rows.length - 1);
+    return d.rows.slice(first, first + 12).map((row, index) => ({
+      row: first + index, kind: row.kind,
+      ...(row.table ? { columns: row.table.widths, header: row.table.header } : {}),
+    }));
+  }
   edit(id: number, revision: string, row: number) {
     const d = this.document(id);
     if (d.revision !== revision) throw new Error("Revision changed");
@@ -150,6 +159,7 @@ export class Library {
       "library.list": wrap(p => this.list(p.query, p.offset)),
       "document.open": wrap(p => this.open(p.id)),
       "document.tile": wrap(p => { if (p.layout !== LAYOUT_REVISION) throw new Error("Layout changed; reopen the document"); return this.tile(p.id, p.revision, p.row); }),
+      "document.window": wrap(p => { if (p.layout !== LAYOUT_REVISION) throw new Error("Layout changed; reopen the document"); return this.window(p.id, p.revision, p.first); }),
       "document.heading": wrap(p => {
         const d = this.document(p.id);
         const points = p.direction > 0 ? d.outline : [...d.outline].reverse();

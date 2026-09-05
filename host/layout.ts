@@ -1,24 +1,81 @@
 import { createCanvas, GlobalFonts } from "../runtime/node_modules/@napi-rs/canvas";
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { BODY_W } from "../shared/layout.ts";
 const cjkPaths = [process.env.FOLIO_CJK_FONT ?? "", "/System/Library/Fonts/Hiragino Sans GB.ttc", "/System/Library/Fonts/STHeiti Light.ttc", "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"];
 const cjk = cjkPaths.find(path => path && existsSync(path));
 if (!cjk || !GlobalFonts.registerFromPath(cjk, "FolioCJK")) throw new Error("Install a CJK font or set FOLIO_CJK_FONT");
 for (const [path, name] of [["/System/Library/Fonts/Supplemental/Arial.ttf", "FolioLatin"], ["/System/Library/Fonts/Supplemental/Arial Unicode.ttf", "FolioUnicode"]]) {
   if (existsSync(path)) GlobalFonts.registerFromPath(path, name);
 }
-export const LAYOUT_REVISION = createHash("sha256").update(readFileSync(cjk)).update("folio-coverage-v2-13px").digest("hex").slice(0, 16);
-export const TILE_W = 384, TILE_H = 16, LINE_H = 20;
-export type Row = { text: string; start: number; end: number; kind: number };
+export const LAYOUT_REVISION = createHash("sha256").update(readFileSync(cjk)).update(`folio-table-v3-${BODY_W}`).digest("hex").slice(0, 16);
+export const TILE_W = BODY_W, TILE_H = 16, LINE_H = 20;
+type TableBand = { widths: number[]; cells: string[]; header: boolean };
+export type Row = { text: string; start: number; end: number; kind: number; table?: TableBand };
 const canvas = createCanvas(TILE_W, TILE_H);
 const ctx = canvas.getContext("2d");
 const font = (kind: number) => kind === 1 ? "bold 14px FolioLatin, FolioCJK, FolioUnicode" : kind === 3 ? "12px monospace, FolioCJK, FolioUnicode" : "13px FolioLatin, FolioCJK, FolioUnicode";
-/** Layout is computed once per revision, on the provider worker. Offsets refer
- * to original UTF-16 source so rendered rows remain editable. */
+
+function cells(line: string): string[] {
+  const parts: string[] = [];
+  let part = "", escaped = false, code = false;
+  const body = line.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "");
+  for (const char of body) {
+    if (escaped) { part += char; escaped = false; }
+    else if (char === "\\") escaped = true;
+    else if (char === "`") { code = !code; part += char; }
+    else if (char === "|" && !code) { parts.push(part.trim()); part = ""; }
+    else part += char;
+  }
+  if (escaped) part += "\\";
+  parts.push(part.trim());
+  return parts;
+}
+
+function wrap(text: string, width: number): string[] {
+  const result: string[] = [];
+  let part = "";
+  for (const char of text) {
+    if (part && ctx.measureText(part + char).width > width) { result.push(part); part = ""; }
+    part += char;
+  }
+  result.push(part);
+  return result;
+}
+
+/** Provider-only layout. Visual bands retain offsets into the original source. */
 export function layout(source: string) {
   const rows: Row[] = [], outline: { row: number; title: string }[] = [];
-  let start = 0, code = false;
-  for (const line of source.split("\n")) {
+  const lines = source.split("\n"), offsets: number[] = [];
+  let cursor = 0, code = false;
+  for (const line of lines) { offsets.push(cursor); cursor += line.length + 1; }
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index], start = offsets[index];
+    const header = cells(line), divider = cells(lines[index + 1] ?? "");
+    if (!code && line.includes("|") && header.length >= 2 && header.length <= 16 &&
+        divider.length === header.length && divider.every(value => /^:?-{3,}:?$/.test(value))) {
+      ctx.font = font(0);
+      const weights = header.map(value => Math.max(32, Math.min(96, ctx.measureText(value).width + 12)));
+      const sum = weights.reduce((a, b) => a + b, 0);
+      const widths = weights.map(weight => Math.floor(TILE_W * weight / sum));
+      widths[widths.length - 1] += TILE_W - widths.reduce((a, b) => a + b, 0);
+      const emit = (values: string[], sourceRow: number, heading: boolean) => {
+        ctx.font = heading ? "bold 13px FolioLatin, FolioCJK, FolioUnicode" : font(0);
+        const wrapped = widths.map((width, col) => wrap(values[col] ?? "", Math.max(6, width - 8)));
+        for (let band = 0; band < Math.max(...wrapped.map(parts => parts.length)); band++) {
+          const content = wrapped.map(parts => parts[band] ?? "");
+          rows.push({ text: content.join(" | "), start: offsets[sourceRow], end: offsets[sourceRow] + lines[sourceRow].length,
+            kind: 4, table: { widths, cells: content, header: heading } });
+        }
+      };
+      emit(header, index, true); index += 1;
+      while (index + 1 < lines.length && lines[index + 1].includes("|") && lines[index + 1].trim()) {
+        const values = cells(lines[index + 1]);
+        if (values.length !== header.length) break;
+        index++; emit(values, index, false);
+      }
+      continue;
+    }
     let text = line, kind = 0, prefix = 0;
     if (/^```/.test(line)) { code = !code; text = code ? "CODE" : ""; kind = 3; }
     else if (code) kind = 3;
@@ -26,28 +83,29 @@ export function layout(source: string) {
       prefix = line.indexOf(" ") + 1; text = line.slice(prefix); kind = 1;
       outline.push({ row: rows.length, title: text.slice(0, 42) });
     } else if (line.startsWith("> ")) { kind = 2; prefix = 2; text = line.slice(2); }
-    else if (line.startsWith("|")) kind = 4;
     else if (/^[-*] /.test(line)) kind = 2;
     ctx.font = font(kind);
-    let piece = "", pieceStart = prefix, offset = prefix;
-    for (const char of text) {
-      if (piece && ctx.measureText(piece + char).width > TILE_W - 12) {
-        rows.push({ text: piece, start: start + pieceStart, end: start + offset, kind });
-        pieceStart = offset; piece = "";
-      }
-      piece += char; offset += char.length;
+    let offset = prefix;
+    for (const part of wrap(text, TILE_W - 12)) {
+      rows.push({ text: part, start: start + offset, end: Math.min(start + line.length, start + offset + part.length), kind });
+      offset += part.length;
     }
-    rows.push({ text: piece, start: start + pieceStart, end: Math.min(start + line.length, start + offset), kind });
-    start += line.length + 1;
   }
   return { rows, outline };
 }
-/** 2-bit alpha mask: 1,536 bytes per line, independent of Unicode coverage.
- * The device expands exactly 6,144 pixels and uploads one fixed-size tile. */
+
+/** One bounded coverage tile; table geometry travels separately as metadata. */
 export function raster(row: Row): string {
   ctx.clearRect(0, 0, TILE_W, TILE_H);
   ctx.fillStyle = "white"; ctx.font = font(row.kind); ctx.textBaseline = "alphabetic";
-  ctx.fillText(row.text, row.kind === 2 ? 8 : 2, 13);
+  if (row.table) {
+    ctx.font = row.table.header ? "bold 13px FolioLatin, FolioCJK, FolioUnicode" : font(0);
+    let x = 0;
+    row.table.cells.forEach((text, column) => {
+      ctx.save(); ctx.beginPath(); ctx.rect(x + 2, 0, row.table!.widths[column] - 4, TILE_H); ctx.clip();
+      ctx.fillText(text, x + 4, 13); ctx.restore(); x += row.table!.widths[column];
+    });
+  } else ctx.fillText(row.text, row.kind === 2 ? 8 : 2, 13);
   const rgba = ctx.getImageData(0, 0, TILE_W, TILE_H).data;
   const mask = Buffer.alloc(TILE_W * TILE_H / 4);
   for (let i = 0; i < TILE_W * TILE_H; i++) mask[i >> 2] |= Math.round(rgba[i * 4 + 3] / 85) << ((i & 3) * 2);
