@@ -6,13 +6,13 @@ from Git; `bun run seed` recreates the fixture without overwriting existing file
 
 ## Automated checks
 
-- Thirteen application tests pass: SQLite paging/search, Unicode coverage, source
+- Fourteen application tests pass: SQLite paging/search, Unicode coverage, source
   ranges, atomic saves, operation identity, restart recovery, external-edit
   conflicts, path confinement, real TCP-to-Worker dispatch, table wrapping and
   source offsets, shoulder command banks, viewport selection and caret boundaries.
 - TypeScript and the production guest build pass against the pinned runtime.
 - The native ARM build produces a production `.3dsx`.
-- The compiled guest Wasm simulation runs **922 frames and 31 behavioral checks**
+- The compiled guest Wasm simulation runs **1,180 frames and 42 behavioral checks**
   against the full library, with replies delayed four frames. It exercises
   actual auxiliary touch hit facts for both pads, keyboard, held-space caret movement and selection;
   verifies shoulder menus do not jump or leak ordinary A/B actions; and checks
@@ -117,3 +117,36 @@ is **1,649,684 bytes**, and has SHA-256
 172.20.12.37:5000 with byte-exact FTP readback. The matching Mac provider is
 running and waiting for the device to relaunch. The local receipt is
 `dist/qa/deploy.json`; physical relaunch and interaction acceptance remain pending.
+
+
+## Caret and classic-controls revision
+
+The user reported that the installed usability revision felt more intuitive,
+then identified cursor drift and control styling issues. A font probe confirmed
+that the source font advances 7px per ASCII character while the prior caret used
+its 8px atlas envelope. The revision measures the font advance, uses it for caret
+and selection geometry, and sends the same cell width to the source rasterizer.
+The shared classic controls are supplied by runtime **3db4c2a9**.
+
+The 42-check replay opens the actual note 513, positions the caret after `This is`,
+compares the emitted caret transform with the native font measurement, and taps
+the widened space key. It verifies the exact inserted text and one-position
+caret advance. It also checks button-down feedback before release, slide-out
+cancellation, discard-sheet modality, cancellation and offline draft removal.
+No save is issued to the real test library. Coverage-pixel tests verify 7px
+whitespace advances and 14px CJK/emoji cells in streamed source text.
+
+All 14 application tests pass. The strict QuickJS check now runs **603 frames**,
+including discard cancellation, with a 128 KiB stack. Framework renderer,
+gesture and caret checks pass (85 tests), as do TypeScript and contract checks.
+The continuous-scroll replay remains at **1,540 UI mutation calls across 360
+frames**, with four requests and 72 document textures/resources as its bounds.
+
+The revised ARM capture completes with both screen readbacks and no startup
+exception. The production binary is **1,658,228 bytes**, SHA-256
+`73d16cf762440e43fefd8824a249856f2ae9fbaaab9b1d958f57674e8b58243a`.
+**This revision and its app-scoped pairing key are installed** at
+172.20.12.37:5000 with byte-exact FTP readback. The matching Mac provider has
+been restarted with the source cell-width rules above. The local receipt is
+`dist/qa/deploy.json`; physical relaunch and interaction acceptance of this
+revision remain pending.

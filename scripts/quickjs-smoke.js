@@ -55,7 +55,9 @@ try {
   s.key("中"); frames(20);
   check(s.dirty() && s.textTiles.size>0, "Unicode source resource failed");
   const draft=s.draft().text; session=-1; frames(20);
+  s.perform("discard"); frames(1); check(s.confirmDiscard(), "discard sheet missing");
+  s.cancelDiscard(); frames(1); check(s.draft().text===draft, "cancel discarded the draft");
   check(s.draft().text===draft, "offline draft lost");
   std.puts(JSON.stringify({ok:true,frames:ticks,nativeNodeIds:node,uploadedTextures:texture,
-    checks:["offline mount","continuous stick scrolling","table reveal","error fallback","retry","editor","Unicode resource","offline draft"]})+"\n");
+    checks:["offline mount","continuous stick scrolling","table reveal","error fallback","retry","editor","Unicode resource","discard cancellation","offline draft"]})+"\n");
 } catch (error) { std.puts(String(error)+"\n"+error.stack+"\n"); std.exit(1); }

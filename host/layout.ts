@@ -111,3 +111,23 @@ export function raster(row: Row): string {
   for (let i = 0; i < TILE_W * TILE_H; i++) mask[i >> 2] |= Math.round(rgba[i * 4 + 3] / 85) << ((i & 3) * 2);
   return mask.toString("base64");
 }
+
+/** Source tiles use the device font's measured cell advance and zero origin.
+ * Each character is clipped to its declared cell so fallback fonts cannot
+ * shift later glyphs or the device's caret/selection boundaries. */
+export function rasterSource(text: string, cellWidth: number): string {
+  if (!Number.isInteger(cellWidth) || cellWidth < 4 || cellWidth > 16) throw new Error("Invalid source cell width");
+  ctx.clearRect(0, 0, TILE_W, TILE_H);
+  ctx.fillStyle = "white"; ctx.font = font(3); ctx.textBaseline = "alphabetic";
+  let x = 0;
+  for (const char of text) {
+    const width = cellWidth * (char.codePointAt(0)! > 255 ? 2 : 1);
+    ctx.save(); ctx.beginPath(); ctx.rect(x, 0, width, TILE_H); ctx.clip();
+    ctx.fillText(char, x, 13); ctx.restore(); x += width;
+    if (x >= TILE_W) break;
+  }
+  const rgba = ctx.getImageData(0, 0, TILE_W, TILE_H).data;
+  const mask = Buffer.alloc(TILE_W * TILE_H / 4);
+  for (let i = 0; i < TILE_W * TILE_H; i++) mask[i >> 2] |= Math.round(rgba[i * 4 + 3] / 85) << ((i & 3) * 2);
+  return mask.toString("base64");
+}

@@ -6,11 +6,11 @@ import { onFrame } from "@pocketjs/framework/lifecycle";
 import { BTN } from "@pocketjs/framework/input";
 import { createScroller, bindDpadScroll } from "@pocketjs/framework/kinetics";
 import { getOps } from "@pocketjs/framework/host";
-import { uploadLine } from "./tiles.ts";
-import { moveSourceCaret, sourceLayout, sourceWindow } from "./editor.ts";
+import { textTileKey, uploadLine } from "./tiles.ts";
+import { moveSourceCaret, sourceAdvance, sourceLayout, sourceWindow } from "./editor.ts";
 import { createRowChanges } from "./window.ts";
 import { chordAction, heldBank, moveListSelection, type Action, type Bank } from "./commands.ts";
-import { FILE_H, LINE_H, SOURCE_COLUMNS, VIEW_H } from "../shared/layout.ts";
+import { FILE_H, LINE_H, SOURCE_COLUMNS, SOURCE_FONT_SLOT, VIEW_H } from "../shared/layout.ts";
 export type FileRow = { id: number; title: string; bytes: number };
 type Document = { id: number; title: string; revision: string; layout: string; rows: number; chars: number; mini: number[]; outline: { row: number; title: string }[]; links: string[] };
 type Draft = { start: number; end: number; text: string; revision: string };
@@ -46,13 +46,15 @@ export function createFolio() {
   const rowSpecs = new Map<number, RowSpec>();
   const files = new Map<number, FileRow>();
   const textTiles = new Map<string, number>();
+  const sourceCellWidth = getOps().measureText("M", SOURCE_FONT_SLOT);
+  const sourceWidth = (text: string) => sourceAdvance(text, sourceCellWidth);
   const source = createMemo(() => sourceLayout(draft()?.text ?? "", SOURCE_COLUMNS));
   const editorScroll = createScroller({ max: () => Math.max(0, source().length * 18 - 162), extent: () => 162 });
   const editorFirst = createMemo(() => Math.max(0, Math.floor(editorScroll.offset() / 18)));
   const editorRows = createMemo(() => source().slice(editorFirst(), editorFirst() + 10));
   const caretRow = createMemo(() => Math.max(0, source().findIndex(r => caret() >= r.start && caret() <= r.end)));
   const blink = createCaretBlink({ onChange: setCaretVisible });
-  createEffect(() => blink.setActive(mode() === "edit" && focus() === "document"));
+  createEffect(() => blink.setActive(mode() === "edit" && focus() === "document" && !confirmDiscard()));
   createEffect(() => blink.setHeld(caretDragging()));
   createEffect(() => {
     caret(); draft(); blink.reset();
@@ -72,18 +74,19 @@ export function createFolio() {
   const firstRow = createMemo(() => Math.max(0, Math.floor(scroll.offset() / LINE_H)));
   const firstFile = createMemo(() => Math.max(0, Math.floor(libraryScroll.offset() / FILE_H)));
   const visibleText = createMemo(() => {
-    const lines: string[] = [];
+    const lines: { text: string; key: string; inverse: boolean }[] = [];
     for (let n = 0; n < 9; n++) {
       const index = firstFile() + n; fileChanges.read(index);
       const title = files.get(index)?.title.slice(0, 17) ?? "";
-      if (/[^\x00-\x7f]/.test(title)) lines.push(title);
+      const inverse = index === selected();
+      if (/[^\x00-\x7f]/.test(title)) lines.push({ text: title, key: textTileKey(title, inverse), inverse });
     }
-    if (mode() === "edit") for (const row of editorRows()) if (/[^\x00-\x7f]/.test(row.text)) lines.push(row.text);
+    if (mode() === "edit") for (const row of editorRows()) if (/[^\x00-\x7f]/.test(row.text)) lines.push({ text: row.text, key: textTileKey(row.text), inverse: false });
     return lines;
   });
   const activeScroll = () => focus() === "library" ? libraryScroll : scroll;
-  bindDpadScroll(scroll, { active: () => !menu() && focus() === "document" && mode() === "read", stepPx: 7, nubPx: 12 });
-  bindDpadScroll(libraryScroll, { active: () => !menu() && focus() === "library", stepPx: 0, nubPx: 12 });
+  bindDpadScroll(scroll, { active: () => !confirmDiscard() && !menu() && focus() === "document" && mode() === "read", stepPx: 7, nubPx: 12 });
+  bindDpadScroll(libraryScroll, { active: () => !confirmDiscard() && !menu() && focus() === "library", stepPx: 0, nubPx: 12 });
   const clearPending = () => { generation++; for (const id of inflight.values()) io.cancel(id); inflight.clear(); };
   const cancelSpatial = (pane?: "library" | "document") => {
     for (const [key, id] of inflight) {
@@ -151,7 +154,7 @@ export function createFolio() {
     setCaret(from + add.length); setAnchor(from + add.length); setSelecting(false); setDirty(true); op = "";
   };
   const key = (value: string) => {
-    if (saving()) return;
+    if (saving() || confirmDiscard()) return;
     if (value === "SHIFT") { setShift(!shift()); return; }
     if (value === "#+=") { setSymbols(!symbols()); return; }
     if (value === "DONE") { mode() === "search" ? search() : save(); return; }
@@ -210,6 +213,13 @@ export function createFolio() {
     if (!selecting()) setAnchor(caret());
     setSelecting(!selecting());
   };
+  const cancelDiscard = () => { setConfirmDiscard(false); setStatus("Draft retained"); };
+  const discard = () => {
+    if (!confirmDiscard() || saving()) return;
+    clearPending(); setDirty(false); setDraft(undefined); setSelecting(false); setMode("read"); setConfirmDiscard(false);
+    setCaretDragging(false); setStatus("Changes discarded");
+    if (doc() && online()) open(doc()!.id, true);
+  };
   const perform = (action: Action) => {
     if (action !== "discard") setConfirmDiscard(false);
     switch (action) {
@@ -226,10 +236,9 @@ export function createFolio() {
       case "copy": { const [from, to] = selection(); clipboard = draft()?.text.slice(from, to) ?? ""; setStatus(clipboard ? "Selection copied" : "Select text to copy"); break; }
       case "paste": if (mode() === "edit" && clipboard) insert(clipboard); else setStatus("Open the editor and copy text first"); break;
       case "discard":
-        if (saving()) break;
-        if (!confirmDiscard()) { setConfirmDiscard(true); setStatus("Press ZL+Y again to discard the draft"); break; }
-        setDirty(false); setDraft(undefined); setSelecting(false); setMode("read"); setConfirmDiscard(false);
-        if (doc() && online()) open(doc()!.id, true); break;
+        if (saving() || !draft()) break;
+        scroll.stop(); libraryScroll.stop(); editorScroll.stop(); setCaretDragging(false);
+        setConfirmDiscard(true); setStatus("Discard changes or keep editing"); break;
       case "top": jump(0, "document"); break;
       case "end": jump(1, "document"); break;
       case "heading": nextHeading(1); break;
@@ -250,6 +259,12 @@ export function createFolio() {
       });
     }
     const pressed = buttons & ~previous; previous = buttons;
+    if (confirmDiscard()) {
+      setMenu(undefined);
+      if (pressed & BTN.CROSS) cancelDiscard();
+      else if (pressed & BTN.CIRCLE) discard();
+      return;
+    }
     const bank = heldBank(buttons); setMenu(bank);
     const action = chordAction(bank, pressed);
     if (action) perform(action);
@@ -288,10 +303,10 @@ export function createFolio() {
     if (!files.has(firstFile)) list(page);
     if (total() > page + 12 && !files.has(page + 12)) list(page + 12);
     for (const line of visibleText()) {
-      if (textTiles.has(line) || inflight.size >= 4) continue;
-      if (request(`text:${line}`, "text.tile", { text: line }, p => {
-        const handle = uploadLine(p.mask, 3); if (handle < 0) return;
-        textTiles.set(line, handle);
+      if (textTiles.has(line.key) || inflight.size >= 4) continue;
+      if (request(`text:${line.key}`, "text.tile", { text: line.text, cellWidth: sourceCellWidth }, p => {
+        const handle = uploadLine(p.mask, 3, line.inverse); if (handle < 0) return;
+        textTiles.set(line.key, handle);
         while (textTiles.size > 20) { const key = textTiles.keys().next().value!; getOps().freeTexture?.(textTiles.get(key)!); textTiles.delete(key); }
         setTextVersion(v => v + 1);
       })) break;
@@ -338,9 +353,9 @@ export function createFolio() {
   onCleanup(() => { clearPending(); clearTiles(); for (const handle of textTiles.values()) getOps().freeTexture?.(handle); });
   return {
     mode, setMode, focus, setFocus, menu, status, online, total, textVersion, doc, draft, caret, query, shift, symbols, selected, setSelected,
-    firstRow, firstFile, source, editorFirst, editorScroll, caretRow, caretVisible, caretDragging, setCaretDragging, dragCaret,
+    firstRow, firstFile, source, sourceCellWidth, sourceWidth, editorFirst, editorScroll, caretRow, caretVisible, caretDragging, setCaretDragging, dragCaret,
     tiles, rowSpecs, files, textTiles, editorRows, sourceLines, scroll, libraryScroll, activeScroll, dirty, saving, selecting, selection, confirmDiscard,
-    key, moveCaret, save, search, activate, edit, jump, open, nextHeading, followLink, toggleSelect, perform,
+    key, moveCaret, save, search, activate, edit, jump, open, nextHeading, followLink, toggleSelect, perform, discard, cancelDiscard,
     rowSpec: (row: number) => { rowChanges.read(row); return rowSpecs.get(row); },
     rowResource: (row: number): ResourceState<Tile> => { rowChanges.read(row); return tileResources.get(row)?.state() ?? pending(); },
     fileResource: (index: number): ResourceState<FileRow> => { fileChanges.read(index); const file = files.get(index); return file ? ready(file) : pending(); },

@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { openSync, closeSync, readFileSync, writeFileSync, readdirSync, realpathSync, statSync, lstatSync, mkdirSync, renameSync, fsyncSync, constants } from "node:fs";
 import { resolve, join, dirname } from "node:path";
-import { layout, raster, LAYOUT_REVISION } from "./layout.ts";
+import { layout, raster, rasterSource, LAYOUT_REVISION } from "./layout.ts";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const integer = (n: unknown, max: number) => {
   if (!Number.isSafeInteger(n) || (n as number) < 0 || (n as number) > max) throw new Error("Invalid position");
@@ -155,7 +155,8 @@ export class Library {
   methods() {
     const wrap = (f: (p: any) => unknown) => (raw: string) => JSON.stringify(f(JSON.parse(raw)));
     return {
-      "text.tile": wrap(p => { if (typeof p.text !== "string" || p.text.length > 100) throw new Error("Text tile budget exceeded"); return { mask: raster({ text: p.text, start: 0, end: p.text.length, kind: 3 }) }; }),
+      "text.tile": wrap(p => { if (typeof p.text !== "string" || p.text.length > 100) throw new Error("Text tile budget exceeded");
+        return { mask: p.cellWidth === undefined ? raster({ text: p.text, start: 0, end: p.text.length, kind: 3 }) : rasterSource(p.text, p.cellWidth) }; }),
       "library.list": wrap(p => this.list(p.query, p.offset)),
       "document.open": wrap(p => this.open(p.id)),
       "document.tile": wrap(p => { if (p.layout !== LAYOUT_REVISION) throw new Error("Layout changed; reopen the document"); return this.tile(p.id, p.revision, p.row); }),

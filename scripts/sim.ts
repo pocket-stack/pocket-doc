@@ -9,6 +9,13 @@ import type { Folio } from "../app/store.ts";
 const library = new Library("data/library"); library.index();
 const wasm = await createWasmUi(await Bun.file("runtime/hosts/web/pocketjs.wasm").arrayBuffer(), { width: 400, height: 480 });
 const ops = wasm.ops;
+const painted = new Map<number, Map<number, number>>();
+const nativeSetProp = ops.setProp;
+ops.setProp = (id, prop, value) => {
+  const entry = painted.get(id) ?? new Map<number, number>(); entry.set(prop, value); painted.set(id, entry);
+  nativeSetProp(id, prop, value);
+};
+ops.hitTestBoundsAuxiliary = (x, y) => ops.hitTestBounds!(x + 40, y + 240);
 (ops as typeof ops & { __viewport: { w: number; h: number } }).__viewport = { w: 400, h: 240 };
 const auxiliary = ops.createNode(NODE_TYPE.view);
 ops.setProp(auxiliary, PROP.posType, ENUMS.PosType.Absolute);
@@ -137,6 +144,35 @@ await press(BTN.LTRIGGER | BTN.SELECT);
 await frames(1, BTN.LTRIGGER | BTN.SELECT);
 check(s.menu() === "selection", "L+SELECT reaches the selection bank on older 3DS hardware");
 await frames(1);
+// Every editor action uses the same pressed palette and release-inside policy.
+const idleButton = await shot("button-idle");
+await frames(1, 0, [105, 14]); const downButton = await shot("button-down");
+check(!s.confirmDiscard() && Buffer.compare(idleButton, downButton) !== 0, "Discard shows a pressed state before release without acting early");
+await frames(1, 0, [105, 45]); await frames(1);
+check(!s.confirmDiscard(), "Sliding out of a toolbar button cancels activation");
+await tap(105, 14); check(s.confirmDiscard(), "Visible Discard opens a confirmation sheet");
+await shot("discard-sheet");
+const kept = s.draft()!.text;
+await tap(55, 44); await press(BTN.RIGHT);
+check(s.draft()!.text === kept && s.confirmDiscard(), "Discard sheet blocks the underlying keyboard and navigation");
+await tap(160, 208);
+check(!s.confirmDiscard() && s.draft()!.text === kept, "Keep Editing cancels discard without changing the draft");
+await tap(105, 14); await tap(160, 159);
+check(!s.draft() && !s.dirty() && s.mode() === "read", "Confirmed discard clears only the local draft even while offline");
+
+connected = 3; await frames(50); s.setSelected(512); s.libraryScroll.scrollTo(512 * 24, { immediate: true }); s.setFocus("library"); await frames(50); s.activate(); await frames(100); s.edit(); await frames(40);
+check(s.doc()?.id === 513 && s.mode() === "edit", "The reported note 513 opens in the source editor");
+const original513 = s.draft()!.text, phrase = original513.indexOf("This is");
+check(phrase >= 0, "Note 513 excerpt contains the reported This is text");
+s.moveCaret(phrase + 7 - s.caret()); await frames(1);
+const prefix = s.source()[s.caretRow()].text.slice(0, s.caret() - s.source()[s.caretRow()].start);
+const caretPaint = [...painted.values()].find(props => props.has(PROP.translateX));
+check(s.sourceCellWidth === 7 && caretPaint?.get(PROP.translateX) === ops.measureText(prefix, 16), "Caret paint uses the actual 7px font advance, not the 8px atlas cell envelope");
+await shot("note-513-before"); await tap(181, 121);
+check(s.draft()!.text === original513.slice(0, phrase + 7) + " " + original513.slice(phrase + 7) && s.caret() === phrase + 8,
+  "Note 513 inserts space exactly after This is and advances the caret once");
+await shot("note-513-after");
+check(readFileSync("data/library/note-0513.md", "utf8").includes("This is document 513"), "Caret and discard replay do not modify note 513 on Mac");
 check(maxPending <= 4 && maxTiles <= 72 && maxSlots <= 72, "Pending requests and document resource caches stay bounded throughout navigation");
 const evidence = { frames: tick, simulatedLatencyFrames: 4, checks, inertiaBefore: before, inertiaAfter: after, maxPending, maxTiles, maxSlots,
   ...s.diagnostics(), note: "Compiled guest + Wasm replay on Mac. No hardware performance claim. No saves performed in real test library." };

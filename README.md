@@ -42,7 +42,8 @@ generated documents, SQLite, build products and logs are ignored by Git.
 | Reader | Right touchpad scrolls/flings; tapping focuses Document; d-pad/circle pad scrolls |
 | Editor | Hold SPACE for 350 ms, then drag to move caret; short tap inserts space; arrows also move caret |
 | Editor | Right pad scrolls source; SELECT arms selection with held-space dragging; COPY copies it |
-| Editor | Top < READ returns to reading and retains the draft; SAVE / START saves; RESUME reopens it |
+| Editor | Top Read returns to reading and retains the draft; Save / START saves; Resume reopens it |
+| Editor | Discard opens a sheet; Keep Editing / B cancels; Discard Changes / A confirms |
 | Host | L+R+START returns to Homebrew Launcher |
 
 Holding a shoulder opens its menu on the corresponding side of the upper
@@ -64,10 +65,34 @@ up/down press selects the first visible file. Further presses move normally.
 The 3DS panel supports one contact. All controls work with one stylus contact;
 typing and relative caret movement share the same screen without hiding the
 keyboard. The active pad has a blue header, and the bottom navigation bar names the focused pane.
-Editing shows persistent READ, EDITING and SAVE controls. The upper screen uses
+Editing shows persistent Read, Discard and Save controls. The space key is
+138px wide; the keyboard contains no duplicate Save button. The upper screen uses
 an iOS 6 light palette, with a persistent 128-pixel file pane and 256-pixel
 document pane. File labels are 12px. Body text remains 13px, headings 14px, source 12px and document
 line spacing 20px. The book logo is a packed image, independent of font glyphs.
+
+## Classic controls and source geometry
+
+Buttons, keycaps, panel rims and selected rows use the shared
+`@pocketjs/framework/classic` palette and components. A button depresses on touch,
+activates on release inside, and cancels when the contact slides outside, the
+button becomes disabled or a modal blocks its gesture. Select and Copy form
+adjacent toolbar actions with one shared border; Select retains the blue state
+while selection is active. File selection uses the same blue gradient with
+white labels. Panel fills are inset so their header cannot cover the rounded rim.
+
+The bevels and action-sheet arrangement reference Apple's archived
+[iOS 6 controls](https://developer.apple.com/library/archive/documentation/UserExperience/Conceptual/TransitionGuide/Controls.html)
+and [temporary views](https://developer.apple.com/library/archive/documentation/UserExperience/Conceptual/TransitionGuide/TempViews.html).
+Discard presents a separate red confirmation action and a Keep Editing button.
+Confirming drops the local draft without saving or changing the Mac document.
+
+Source geometry uses the baked font's **measured 7px advance**, rather than its
+8px atlas envelope. This measurement drives caret and selection positions and
+travels with source-tile requests; the Mac places and clips fallback glyphs to
+the same grid, with two cells for wide characters. The editor still wraps at
+30 cells. This fixes the visible caret drift that made `This is|` appear to
+insert before the final `s` even though the underlying UTF-16 insertion was local.
 
 ## Ownership and bounds
 

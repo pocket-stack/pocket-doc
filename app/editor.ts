@@ -1,6 +1,9 @@
 export type SourceRow = { text: string; start: number; end: number };
 export const textCells = (text: string) => Array.from(text).reduce((n, char) => n + (char.codePointAt(0)! > 255 ? 2 : 1), 0);
 
+/** Uses the same advance for text, selection and caret geometry. */
+export const sourceAdvance = (text: string, cellWidth: number) => textCells(text) * cellWidth;
+
 /** Only the bounded source excerpt is laid out locally; preserve UTF-16 offsets. */
 export function sourceLayout(text: string, columns = 46): SourceRow[] {
   const rows: SourceRow[] = [];

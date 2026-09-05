@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { layout, raster, TILE_W, TILE_H } from "../host/layout.ts";
+import { layout, raster, rasterSource, TILE_W, TILE_H } from "../host/layout.ts";
 import { sourceRows, textCells } from "../app/editor.ts";
 
 test("tables wrap into fixed-height bands with shared geometry and original source offsets", () => {
@@ -19,6 +19,19 @@ test("tables wrap into fixed-height bands with shared geometry and original sour
   }
   expect(rows.at(-1)?.text).toBe("After table");
   expect(rows.some(row => row.text.includes(":---:"))).toBe(false);
+});
+
+test("streamed source glyphs share the device cell grid, including whitespace and wide characters", () => {
+  const pixel = (mask: Buffer, x: number, y: number) => (mask[(y * TILE_W + x) >> 2] >> ((x & 3) * 2)) & 3;
+  const glyph = Buffer.from(rasterSource("s", 7), "base64");
+  expect(glyph.some(byte => byte !== 0)).toBe(true);
+  for (const [text, shift] of [[" s", 7], ["This i s", 49], ["中s", 14], ["😀s", 14]] as const) {
+    const image = Buffer.from(rasterSource(text, 7), "base64");
+    for (let y = 0; y < TILE_H; y++) for (let x = 0; x < 7; x++) {
+      expect(pixel(image, x + shift, y)).toBe(pixel(glyph, x, y));
+    }
+  }
+  expect(() => rasterSource("text", 0)).toThrow("Invalid source cell width");
 });
 
 test("fenced code and unmatched pipe lines remain text", () => {

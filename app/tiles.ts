@@ -2,9 +2,10 @@ import { getOps } from "@pocketjs/framework/host";
 import { uploadCoverage } from "@pocketjs/framework/offload";
 import { BODY_W } from "../shared/layout.ts";
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-export function uploadLine(mask: string, kind: number) {
+export const textTileKey = (text: string, inverse = false) => `${inverse ? "selected:" : "normal:"}${text}`;
+export function uploadLine(mask: string, kind: number, inverse = false) {
   if (mask.length !== 1368 || !/^[A-Za-z0-9+/]+={0,2}$/.test(mask)) throw new Error("Invalid line mask");
-  const color = kind === 1 ? [38, 70, 111] : kind === 2 ? [88, 102, 120] : [34, 39, 46];
+  const color = inverse ? [255, 255, 255] : kind === 1 ? [38, 70, 111] : kind === 2 ? [88, 102, 120] : [34, 39, 46];
   const foreground = (0xff000000 | color[2] << 16 | color[1] << 8 | color[0]) >>> 0;
   const native = uploadCoverage(mask, BODY_W, 16, foreground);
   if (native !== undefined) return native;

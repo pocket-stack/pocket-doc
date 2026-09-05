@@ -1,15 +1,16 @@
-import { createMemo, createSignal, For, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { AuxiliarySurface, Image, Text, View, type NodeMirror } from "@pocketjs/framework/components";
 import { ResourceBoundary, ResourceImage, pending, ready, type TextureResource } from "@pocketjs/framework/resource";
-import { createGesture } from "@pocketjs/framework/gesture";
+import { createGesture, pushTouchBlock } from "@pocketjs/framework/gesture";
+import { ClassicButton, ClassicFace, ClassicPanel, classicPalette } from "@pocketjs/framework/classic";
 import { createFolio, type Folio } from "./store.ts";
 import { BANKS, type Bank } from "./commands.ts";
-import { textCells } from "./editor.ts";
+import { textTileKey } from "./tiles.ts";
 import { BODY_W, FILE_H, LINE_H } from "../shared/layout.ts";
 import { ROW_SLOTS, slotRow } from "./window.ts";
 const SLOTS = Array.from({ length: ROW_SLOTS }, (_, i) => i);
-const LETTERS = ["q w e r t y u i o p", "a s d f g h j k l DEL", "SHIFT z x c v b n m , .", "#+= / - SPACE ENTER DONE"];
-const SYMBOLS = ["1 2 3 4 5 6 7 8 9 0", "[ ] ( ) { } # * _ DEL", "SHIFT ! ? : ; ' \" ` + =", "#+= / - SPACE ENTER DONE"];
+const LETTERS = ["q w e r t y u i o p", "a s d f g h j k l DEL", "SHIFT z x c v b n m , .", "#+= / - SPACE ENTER"];
+const SYMBOLS = ["1 2 3 4 5 6 7 8 9 0", "[ ] ( ) { } # * _ DEL", "SHIFT ! ? : ; ' \" ` + =", "#+= / - SPACE ENTER"];
 
 function Skeleton(p: { width?: number; columns?: number[] }) {
   return <View debugName={p.columns ? "TableSkeleton" : "TextSkeleton"} class="relative w-full h-full animate-pulse">
@@ -19,12 +20,12 @@ function Skeleton(p: { width?: number; columns?: number[] }) {
   </View>;
 }
 
-function AsyncText(p: { s: Folio; value: () => string; width: number; size?: "small" | "normal"; mono?: boolean }) {
+function AsyncText(p: { s: Folio; value: () => string; width: number; size?: "small" | "normal"; mono?: boolean; inverse?: boolean }) {
   const unicode = () => /[^\x00-\x7f]/.test(p.value());
   return <View class="relative h-[18] overflow-hidden" style={{ width: p.width }}>
-    <Show when={unicode()} fallback={<Text class={p.mono ? "absolute left-0 top-0 text-xs font-mono text-[#22272e]" : p.size === "small" ? "absolute left-0 top-0 text-xs text-[#22272e]" : "absolute left-0 top-0 text-sm text-[#22272e]"}>{p.value()}</Text>}>
+    <Show when={unicode()} fallback={<Text class={p.mono ? "absolute left-0 top-0 text-xs font-mono" : p.size === "small" ? "absolute left-0 top-0 text-xs" : "absolute left-0 top-0 text-sm"} style={{ textColor: p.inverse ? 0xffffffff : 0xff2e2722 }}>{p.value()}</Text>}>
       <ResourceImage class="relative h-[16] overflow-hidden" style={{ width: p.width }} state={() => {
-        p.s.textVersion(); const handle = p.s.textTiles.get(p.value());
+        p.s.textVersion(); const handle = p.s.textTiles.get(textTileKey(p.value(), p.inverse));
         return handle === undefined ? pending<TextureResource>() : ready({ handle, width: BODY_W, height: 16 });
       }} fallback={() => <Skeleton width={Math.max(12, p.width - 12)} />} />
     </Show>
@@ -33,14 +34,15 @@ function AsyncText(p: { s: Folio; value: () => string; width: number; size?: "sm
 
 function LibraryRow(p: { s: Folio; slot: number }) {
   const index = createMemo(() => slotRow(p.s.firstFile(), p.slot));
-  return <View debugName="FileRow" class={index() === p.s.selected()
-    ? "absolute left-0 w-[127] h-[24] overflow-hidden bg-gradient-to-b from-[#dce9f9] to-[#b9d2ef]"
-    : "absolute left-0 w-[127] h-[24] overflow-hidden bg-white"} style={{ translateY: index() * FILE_H, display: p.s.total() && index() >= p.s.total() ? 1 : 0 }}>
+  const selected = () => index() === p.s.selected();
+  return <View debugName="FileRow" class="absolute left-0 w-[127] h-[24] overflow-hidden" style={{ translateY: index() * FILE_H,
+    bgColor: 0xffffffff, gradDir: 1, gradFrom: selected() ? classicPalette("primary").gradFrom : "#ffffff",
+    gradTo: selected() ? classicPalette("primary").gradTo : "#ffffff", display: p.s.total() && index() >= p.s.total() ? 1 : 0 }}>
     <View class="absolute left-0 right-0 bottom-0 h-[1] bg-[#e1e4e8]" />
     <ResourceBoundary state={() => p.s.fileResource(index())} fallback={() => <View class="absolute left-[6] top-[4] w-[110] h-[16]"><Skeleton width={96 - p.slot % 3 * 12} /></View>}>
       {file => <>
         <Show when={p.s.doc()?.id === file().id}><View class="absolute left-0 top-[3] bottom-[3] w-[3] bg-[#397cca]" /></Show>
-        <View class="absolute left-[7] top-[5]"><AsyncText s={p.s} value={() => file().title.slice(0, 17)} width={114} size="small" /></View>
+        <View class="absolute left-[7] top-[5]"><AsyncText s={p.s} value={() => file().title.slice(0, 17)} width={114} size="small" inverse={selected()} /></View>
       </>}
     </ResourceBoundary>
   </View>;
@@ -68,8 +70,8 @@ function DocumentRow(p: { s: Folio; slot: number }) {
 function SourceRow(p: { s: Folio; index: number }) {
   const index = createMemo(() => slotRow(p.s.editorFirst(), p.index));
   const row = createMemo(() => p.s.source()[index()]);
-  const left = () => row() ? textCells(row()!.text.slice(0, Math.max(0, p.s.selection()[0] - row()!.start))) * 8 : 0;
-  const right = () => row() ? textCells(row()!.text.slice(0, Math.max(0, p.s.selection()[1] - row()!.start))) * 8 : 0;
+  const left = () => row() ? p.s.sourceWidth(row()!.text.slice(0, Math.max(0, p.s.selection()[0] - row()!.start))) : 0;
+  const right = () => row() ? p.s.sourceWidth(row()!.text.slice(0, Math.max(0, p.s.selection()[1] - row()!.start))) : 0;
   return <View class="absolute left-0 w-[256] h-[18] overflow-hidden" style={{ translateY: index() * 18 }}>
     <View class="absolute top-0 h-[16] bg-[#bbd9ff]" style={{ insetL: left(), width: Math.max(0, right() - left()) }} />
     <AsyncText s={p.s} value={() => row()?.text ?? ""} width={248} mono />
@@ -95,14 +97,16 @@ function Keyboard(p: { s: Folio }) {
   const [pressed, setPressed] = createSignal("");
   const keys = createMemo(() => (p.s.symbols() ? SYMBOLS : LETTERS).flatMap((line, row) => {
     const values = line.split(" "), width = 304 / values.length;
-    return values.map((value, col) => ({ value, x: 8 + width * col, y: 32 + row * 26, w: width - 2 }));
+    let x = 8;
+    return values.map((value, col) => { const w = row === 3 ? [42, 30, 30, 140, 62][col] : width;
+      const key = { value, x, y: 32 + row * 26, w: w - 2 }; x += w; return key; });
   }));
   let root: NodeMirror | undefined, downKey = "", dx = 0, dy = 0;
   const release = () => { setPressed(""); p.s.setCaretDragging(false); };
   createGesture({ surface: "auxiliary", region: { node: () => root }, longPressSeconds: 0.35,
     onDown(c) {
       downKey = ""; dx = dy = 0;
-      if (p.s.mode() !== "edit" && p.s.mode() !== "search") return;
+      if (p.s.confirmDiscard() || p.s.saving() || p.s.mode() !== "edit" && p.s.mode() !== "search") return;
       const hit = keys().find(k => c.x >= k.x && c.x < k.x + k.w + 2 && c.y >= k.y && c.y < k.y + 26);
       if (hit) {
         downKey = hit.value; setPressed(downKey);
@@ -124,84 +128,90 @@ function Keyboard(p: { s: Folio }) {
     onUp: release, onCancel() { downKey = ""; release(); },
   });
   return <View ref={root} debugName="FolioKeyboard" class="absolute left-0 top-[30] w-[320] h-[108]" style={{ display: p.s.mode() === "edit" || p.s.mode() === "search" ? 0 : 1 }}>
-    <For each={keys()}>{k => <View class="absolute h-[23] rounded-[3] border border-[#929ca8] bg-gradient-to-b from-white to-[#d7dce3]"
-      style={{ insetL: k.x, insetT: k.y - 30, width: k.w, opacity: pressed() === k.value || p.s.caretDragging() ? 0.55 : 1,
-        bgColor: k.value === "SHIFT" && p.s.shift() ? 0xffedceb4 : 0 }}>
-      <Show when={k.value === "SHIFT"} fallback={<Text class="absolute left-0 right-0 top-[5] text-xs text-center text-[#253247]">{k.value === "DONE" ? "SAVE" : p.s.shift() && k.value.length === 1 ? k.value.toUpperCase() : k.value}</Text>}>
+    <For each={keys()}>{k => <ClassicFace tone="key" pressed={pressed() === k.value} selected={k.value === "SHIFT" && p.s.shift()} disabled={p.s.saving()}
+      style={{ posType: 1, height: 23, insetL: k.x, insetT: k.y - 30, width: k.w }}>
+      <Show when={k.value === "SHIFT"} fallback={<Text class="absolute left-0 right-0 top-[5] text-xs text-center" style={{ textColor: classicPalette("key", pressed() === k.value).textColor }}>{p.s.shift() && k.value.length === 1 ? k.value.toUpperCase() : k.value}</Text>}>
         <Image debugName="ShiftIcon" class="absolute left-[6] top-[3] w-[16] h-[16]" src="shift.svg" />
       </Show>
-    </View>}</For>
+    </ClassicFace>}</For>
   </View>;
 }
 
 function Deck(p: { s: Folio }) {
-  let listPad: NodeMirror | undefined, docPad: NodeMirror | undefined, header: NodeMirror | undefined;
+  let listPad: NodeMirror | undefined, docPad: NodeMirror | undefined;
   const typing = () => p.s.mode() === "edit" || p.s.mode() === "search";
   const y = () => typing() ? 145 : 33;
   const height = () => typing() ? 89 : 201;
   const target = () => p.s.mode() === "edit" ? p.s.editorScroll : p.s.scroll;
-  let quick = false;
-  createGesture({ surface: "auxiliary", region: { node: () => header },
-    onTap(c) {
-      if (p.s.mode() === "edit") { if (c.x < 83) p.s.perform("read"); else if (c.x > 244) p.s.save(); }
-      else if (p.s.mode() === "search") { if (c.x < 83) p.s.setMode("read"); else if (c.x > 244) p.s.search(); }
-    },
-  });
+  const blocked = () => p.s.confirmDiscard();
+  createEffect(() => { if (blocked()) onCleanup(pushTouchBlock()); });
   createGesture({ surface: "auxiliary", region: { node: () => listPad }, axis: "y", panSlop: 2,
-    onDown: () => { p.s.setFocus("library"); p.s.libraryScroll.beginDrag(); },
+    onDown: () => { if (!blocked()) { p.s.setFocus("library"); p.s.libraryScroll.beginDrag(); } },
     onPanMove: c => p.s.libraryScroll.drag(-c.fdy * 1.8),
     onPanEnd: c => p.s.libraryScroll.endDrag(-c.vy * 1.8),
     onTap: () => p.s.libraryScroll.endDrag(0),
     onCancel: () => p.s.libraryScroll.stop(),
   });
   createGesture({ surface: "auxiliary", region: { node: () => docPad }, axis: "y", panSlop: 2,
-    onDown: c => {
-      p.s.setFocus("document"); quick = c.y >= y() + height() - 31;
-      if (!quick) target().beginDrag();
-    },
-    onPanMove: c => { if (!quick) target().drag(-c.fdy * 1.8); },
-    onPanEnd: c => { if (!quick) target().endDrag(-c.vy * 1.8); },
-    onTap: c => {
-      if (quick) { if (c.x < 219) p.s.toggleSelect(); else p.s.mode() === "edit" ? p.s.perform("copy") : p.s.edit(); }
-      else target().endDrag(0);
-    },
+    onDown: () => { if (!blocked()) { p.s.setFocus("document"); target().beginDrag(); } },
+    onPanMove: c => target().drag(-c.fdy * 1.8),
+    onPanEnd: c => target().endDrag(-c.vy * 1.8),
+    onTap: () => target().endDrag(0),
     onCancel: () => target().stop(),
   });
+  const buttonStyle = (x: number, top: number, width: number, shown = true) => ({ posType: 1, insetL: x, insetT: top, width, height: 23, display: shown ? 0 : 1 });
+  // Fixed button subtrees mount before the deck wrapper (QuickJS stack bound).
+  const close = <ClassicButton debugName="ReadButton" surface="auxiliary" label={p.s.mode() === "search" ? "Cancel" : "Read"}
+    style={buttonStyle(5, 3, 59, typing())} disabled={blocked() || p.s.saving()}
+    onPress={() => p.s.mode() === "search" ? p.s.setMode("read") : p.s.perform("read")} />;
+  const discard = <ClassicButton debugName="DiscardButton" surface="auxiliary" label="Discard" tone="danger"
+    style={buttonStyle(70, 3, 73, p.s.mode() === "edit")} disabled={blocked() || p.s.saving() || !p.s.dirty()}
+    onPress={() => p.s.perform("discard")} />;
+  const save = <ClassicButton debugName="SaveButton" surface="auxiliary" label={p.s.mode() === "search" ? "Find" : p.s.saving() ? "Saving" : "Save"} tone="primary"
+    style={buttonStyle(249, 3, 66, typing())} disabled={blocked() || p.s.saving()}
+    onPress={() => p.s.mode() === "search" ? p.s.search() : p.s.save()} />;
+  const select = <ClassicButton debugName="SelectButton" surface="auxiliary" label="Select" selected={p.s.selecting()} edge="left"
+    style={buttonStyle(130, y() + height() - 31, 89)} disabled={blocked() || p.s.saving() || !p.s.doc()}
+    onPress={() => { p.s.setFocus("document"); p.s.toggleSelect(); }} />;
+  const copy = <ClassicButton debugName="CopyEditButton" surface="auxiliary" label={p.s.mode() === "edit" ? "Copy" : p.s.draft() ? "Resume" : "Edit"} edge="right"
+    style={buttonStyle(218, y() + height() - 31, 88)} disabled={blocked() || p.s.saving() || !p.s.doc() || p.s.mode() === "edit" && p.s.selection()[0] === p.s.selection()[1]}
+    onPress={() => { p.s.setFocus("document"); p.s.mode() === "edit" ? p.s.perform("copy") : p.s.edit(); }} />;
+  const confirm = <ClassicButton debugName="ConfirmDiscard" surface="auxiliary" allowWhenBlocked label="Discard Changes" tone="danger"
+    style={{ ...buttonStyle(16, 146, 288, blocked()), height: 34 }} disabled={!blocked() || p.s.saving()}
+    onPress={p.s.discard} />;
+  const cancel = <ClassicButton debugName="CancelDiscard" surface="auxiliary" allowWhenBlocked label="Keep Editing"
+    style={{ ...buttonStyle(16, 194, 288, blocked()), height: 34 }} disabled={!blocked()}
+    onPress={p.s.cancelDiscard} />;
+  const keyboard = <Keyboard s={p.s} />;
   return <View debugName="FolioDeck" class="relative w-full h-full bg-[#dbe1e9]">
-    <View ref={header} debugName="EditorNavigation" class="absolute left-0 right-0 top-0 h-[28] bg-gradient-to-b from-[#f6f8fb] to-[#c1cad7]">
+    <View debugName="EditorNavigation" class="absolute left-0 right-0 top-0 h-[28] bg-gradient-to-b from-[#f6f8fb] to-[#c1cad7]">
       <Show when={typing()} fallback={<Text class="absolute left-[9] top-[7] text-xs font-bold text-[#405c80]">{p.s.focus() === "library" ? "Files focused" : "Document focused"}</Text>}>
-        <View class="absolute left-[5] top-[3] w-[75] h-[22] rounded-[4] border border-[#879db8] bg-gradient-to-b from-[#fcfdff] to-[#dce4ef]">
-          <Text class="absolute left-0 right-0 top-[4] text-center text-xs font-bold text-[#365d8c]">{p.s.mode() === "edit" ? "< READ" : "CANCEL"}</Text>
-        </View>
-        <Text class="absolute left-[85] right-[78] top-[7] text-center text-xs font-bold text-[#405c80]">{p.s.mode() === "edit" ? p.s.dirty() ? "EDITING *" : "EDITING" : "SEARCH"}</Text>
-        <View class="absolute right-[5] top-[3] w-[66] h-[22] rounded-[4] border border-[#476d9e] bg-gradient-to-b from-[#8aa9ce] to-[#4e7fb7]">
-          <Text class="absolute left-0 right-0 top-[4] text-center text-xs font-bold text-white">{p.s.mode() === "search" ? "FIND" : p.s.saving() ? "SAVING" : "SAVE"}</Text>
-        </View>
+        <Text class="absolute left-[148] right-[77] top-[7] text-center text-xs font-bold text-[#405c80]">{p.s.mode() === "edit" ? p.s.dirty() ? "Editing *" : "Editing" : "Search"}</Text>
       </Show>
       <Show when={!typing()}><Text class="absolute right-[9] top-[7] text-xs text-[#405c80]">L / R: actions</Text></Show>
     </View>
-    <Keyboard s={p.s} />
-    <View ref={listPad} debugName="LibraryTouchpad" class="absolute left-[6] w-[108] rounded-[6] border overflow-hidden bg-gradient-to-b from-[#f5f7fa] to-[#e3e9f1]"
-      style={{ insetT: y(), height: height(), borderColor: p.s.focus() === "library" ? 0xffa4703c : 0xffc4b2a4 }}>
-      <View class="absolute left-0 right-0 top-0 h-[27]" style={{ bgColor: p.s.focus() === "library" ? 0xffac7c48 : 0xffe9dfd2 }}>
-        <Text class="absolute left-0 right-0 top-[7] text-center text-xs font-bold" style={{ textColor: p.s.focus() === "library" ? 0xffffffff : 0xff906745 }}>FILES</Text>
+    {close}{discard}{save}{keyboard}
+    <ClassicPanel debugName="LibraryPadFrame" active={p.s.focus() === "library"} style={{ posType: 1, insetL: 6, width: 108, insetT: y(), height: height() }}>
+      <View ref={listPad} debugName="LibraryTouchpad" class="absolute left-0 top-0 w-full h-full">
+        <Text class="absolute left-0 right-0 top-[8] text-center text-xs font-bold" style={{ textColor: classicPalette(p.s.focus() === "library" ? "primary" : "neutral").textColor }}>Files</Text>
+        <Text class="absolute left-0 right-0 text-center text-xs text-[#6c829e]" style={{ insetT: typing() ? 38 : 89 }}>slide to scroll</Text>
+        <Text class="absolute left-0 right-0 bottom-[11] text-center text-xs text-[#6c829e]">A opens</Text>
       </View>
-      <Text class="absolute left-0 right-0 text-center text-xs text-[#6c829e]" style={{ insetT: typing() ? 38 : 89 }}>slide to scroll</Text>
-      <Text class="absolute left-0 right-0 bottom-[11] text-center text-xs text-[#6c829e]">A opens</Text>
+    </ClassicPanel>
+    <ClassicPanel debugName="DocumentPadFrame" active={p.s.focus() === "document"} style={{ posType: 1, insetL: 122, width: 192, insetT: y(), height: height() }}>
+      <View ref={docPad} debugName="DocumentTouchpad" class="absolute left-0 top-0 w-full" style={{ height: height() - 33 }}>
+        <Text class="absolute left-0 right-0 top-[8] text-center text-xs font-bold" style={{ textColor: classicPalette(p.s.focus() === "document" ? "primary" : "neutral").textColor }}>{p.s.mode() === "edit" ? "Source" : "Document"}</Text>
+        <Text class="absolute left-0 right-0 text-center text-xs text-[#6c829e]" style={{ insetT: typing() ? 35 : 89 }}>{p.s.mode() === "edit" ? p.s.caretDragging() ? "Release to type" : "Hold space + drag" : p.s.mode() === "search" ? p.s.query() || "Type a query" : "slide / lift to coast"}</Text>
+      </View>
+    </ClassicPanel>
+    {select}{copy}
+    <View debugName="DiscardSheet" class="absolute left-0 top-0 w-full h-full" style={{ display: blocked() ? 0 : 1, bgColor: "#10203866" }}>
+      <View class="absolute left-0 right-0 bottom-0 h-[145] border border-[#657489] bg-gradient-to-b from-[#b1bbc9] to-[#657891]">
+        <Text class="absolute left-0 right-0 top-[11] text-center text-sm font-bold text-[#243955]">Discard unsaved changes?</Text>
+        <Text class="absolute left-0 right-0 top-[32] text-center text-xs text-[#344d6c]">The document on Mac stays unchanged.</Text>
+      </View>
     </View>
-    <View ref={docPad} debugName="DocumentTouchpad" class="absolute left-[122] w-[192] rounded-[6] border overflow-hidden bg-gradient-to-b from-[#f5f7fa] to-[#e3e9f1]"
-      style={{ insetT: y(), height: height(), borderColor: p.s.focus() === "document" ? 0xffa4703c : 0xffc4b2a4 }}>
-      <View class="absolute left-0 right-0 top-0 h-[27]" style={{ bgColor: p.s.focus() === "document" ? 0xffac7c48 : 0xffe9dfd2 }}>
-        <Text class="absolute left-0 right-0 top-[7] text-center text-xs font-bold" style={{ textColor: p.s.focus() === "document" ? 0xffffffff : 0xff906745 }}>{p.s.mode() === "edit" ? "SOURCE" : "DOCUMENT"}</Text>
-      </View>
-      <Text class="absolute left-0 right-0 text-center text-xs text-[#6c829e]" style={{ insetT: typing() ? 35 : 89 }}>{p.s.mode() === "edit" ? p.s.caretDragging() ? "Release to type" : "Hold space + drag" : p.s.mode() === "search" ? p.s.query() || "Type a query" : "slide / lift to coast"}</Text>
-      <View class="absolute left-[8] bottom-[7] w-[82] h-[23] rounded-[4] border border-[#9bacc1]" style={{ bgColor: p.s.selecting() ? 0xfff0d2b5 : 0xfffdfbf9 }}>
-        <Text class="absolute left-0 right-0 top-[5] text-center text-xs text-[#355d8d]">{p.s.selecting() ? "SELECTING" : "SELECT"}</Text>
-      </View>
-      <View class="absolute right-[8] bottom-[7] w-[82] h-[23] rounded-[4] border border-[#9bacc1] bg-[#f9fbfd]">
-        <Text class="absolute left-0 right-0 top-[5] text-center text-xs text-[#355d8d]">{p.s.mode() === "edit" ? "COPY" : p.s.draft() ? "RESUME" : "EDIT"}</Text>
-      </View>
-    </View>
+    {confirm}{cancel}
   </View>;
 }
 
@@ -241,7 +251,7 @@ export default function FolioApp() {
               {source}
               <View debugName="SourceCaret" class="absolute left-0 top-0 w-[1] h-[16] bg-[#246cc3]" style={{ opacity: s.caretVisible() ? 1 : 0,
                 translateY: s.caretRow() * 18,
-                translateX: textCells((s.source()[s.caretRow()]?.text ?? "").slice(0, s.caret() - (s.source()[s.caretRow()]?.start ?? 0))) * 8 }} />
+                translateX: s.sourceWidth((s.source()[s.caretRow()]?.text ?? "").slice(0, s.caret() - (s.source()[s.caretRow()]?.start ?? 0))) }} />
             </View>
           </View>
         </View>
