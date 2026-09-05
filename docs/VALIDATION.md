@@ -40,7 +40,8 @@ The whole-document revision and app-scoped pairing key are installed at
 Its production binary is **1,688,560 bytes**, SHA-256
 `124c2dfe190525b0b9d425e1123cc4397c5cbb2256985cc03d607864d6a4cc9a`.
 Application and framework PR checks pass.
-Physical launch and interaction acceptance of this revision remain pending.
+The restarted provider received a fresh device connection and frame telemetry.
+Physical interaction and frame-time acceptance of this revision remain pending.
 The deployment script also accepts ftpd's exact `450 No such file or directory`
 reply when the old Folio launcher has already been removed. Other temporary
 FTP failures still fail deployment. The device receipts below describe earlier
