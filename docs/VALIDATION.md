@@ -49,9 +49,12 @@ frame-time result.**
 
 The new interaction revision adds the light dual-pane layout, four shoulder
 command banks, split pads, resource fallbacks and tables. Its production native
-build passes; its **device installation and physical interaction acceptance are
-pending**. Performance testing is deferred until the interaction review is
-accepted. Prior FTP and save receipts do not validate this new interface.
+build passes. **The interaction build and app-scoped pairing key are installed
+and verified by byte-exact FTP readback** at 172.20.12.37:5000. The matching Mac
+provider has been restarted and is waiting for Pocket Folio to launch.
+Physical interaction acceptance remains pending. Performance testing is
+deferred until the interaction review is accepted. Prior save receipts do not
+validate this new interface.
 
 The review build is **1,640,516 bytes**, SHA-256
 `508e8cb2eacbc0c960693ddf4ae678a276dd9fe71d793bafbb60c78b9a7edfcd`.
