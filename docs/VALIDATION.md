@@ -7,21 +7,24 @@ create and save checks never write the paired Mac's live library.
 
 ## Current automated checks
 
-- **24 application tests** pass, including full-source staging, cross-window
+- **28 application tests** pass, including full-source staging, cross-window
   undo/redo, idempotent retries, restart/save recovery, external-edit conflicts,
-  exclusive file creation and recovery of an orphaned create staging file.
+  exclusive file creation, delete/recovery, monotonic file IDs, and pruning
+  files removed through Finder.
 - **110 framework tests** pass for rendering, DevTools, 3DS profiles and platform
   runtime contracts. They cover recording/replaying the optional right stick,
   deadzones and centering when a host or older tape omits it. TypeScript and
   generated contract checks pass.
 - TypeScript and the compiled production guest pass with runtime **6bbb4a92**.
-  **731 QuickJS frames at a 128 KiB stack** cover startup, resource errors and
-  retry, Unicode input, discard cancellation and filename-dialog creation.
-- **2,516 compiled-guest frames and 80 behavioral checks** pass with four-frame
+  **839 QuickJS frames at a 128 KiB stack** cover startup, resource errors and
+  retry, Unicode input, discard cancellation, filename-dialog creation, and delete confirmation/cancellation.
+- **3,231 compiled-guest frames and 93 behavioral checks** pass with four-frame
   provider latency. They exercise code horizontal scrolling, auxiliary hit
   facts, compact keyboard/pads, selection, right-stick caret movement, whole
   source navigation, typing during a delayed seek, lost-reply recovery,
-  boundary input/Backspace, save at the document end and create-to-editor.
+  boundary input/Backspace, save at the document end, create-to-editor, rendered
+  6px spacing, short-file and empty-result rendering, and touch-confirmed deletion
+  with lost-acknowledgement recovery.
   Requests stay within four and document textures/resource slots within 72.
 - The ARM capture completes both upper and lower screen readbacks. The 3DS
   QuickJS stack limit remains **192 KiB**. The production build excludes capture
@@ -34,18 +37,18 @@ guest and the runtime Wasm artifact. Only the QA directory is replaced.
 
 ## Current deployment
 
-The whole-document revision and app-scoped pairing key are installed at
-172.20.12.37:5000 with **byte-exact FTP readback**. The launcher is
-`/3DS/pocketdoc-main.3dsx`; the matching Mac provider has been restarted.
-Its production binary is **1,688,560 bytes**, SHA-256
-`124c2dfe190525b0b9d425e1123cc4397c5cbb2256985cc03d607864d6a4cc9a`.
-Application and framework PR checks pass.
-The restarted provider received a fresh device connection and frame telemetry.
-Physical interaction and frame-time acceptance of this revision remain pending.
-The deployment script also accepts ftpd's exact `450 No such file or directory`
-reply when the old Folio launcher has already been removed. Other temporary
-FTP failures still fail deployment. The device receipts below describe earlier
-builds, including the user's accepted UX improvements.
+The spacing, short-document and delete revision and its app-scoped pairing key
+are **installed with byte-exact FTP readback** at 172.20.12.37:5000. The matching
+Mac provider is restarted. The production binary is **1,694,848 bytes**, SHA-256
+`0ad75ab371edcec6b8489c433e03bcdd222d2bb329fed511b336f36d7466cc61`.
+
+The preceding whole-document build (1,688,560 bytes, SHA-256
+`124c2dfe190525b0b9d425e1123cc4397c5cbb2256985cc03d607864d6a4cc9a`)
+and app-scoped pairing key were installed with byte-exact FTP readback.
+The restarted provider received a fresh device connection and frame telemetry;
+the user subsequently confirmed the interaction improvements. The live library
+was opened in Finder for inspection. Physical interaction and frame-time
+acceptance of the new revision remain pending.
 
 ## Physical device
 

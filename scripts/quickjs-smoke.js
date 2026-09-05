@@ -1,7 +1,7 @@
 // Run the compiled guest in QuickJS, with a stricter 128 KiB stack than the
 // 3DS host's 192 KiB. Host operations are stubs: this checks JS execution and
 // resource transitions, while scripts/sim.ts and native captures check pixels.
-let node = 3, texture = 1, session = -1, ticks = 0, failures = false;
+let node = 3, texture = 1, session = -1, ticks = 0, failures = false, libraryTotal = 1000;
 const replies = [];
 const mask = "A".repeat(1366) + "==";
 const document = {id:1, title:"Stack smoke", revision:"revision-1", layout:"layout-1", rows:1000,
@@ -21,14 +21,16 @@ globalThis.offload = {
     const request = JSON.parse(raw), p = JSON.parse(request.payload);
     let value;
     switch (request.method) {
-      case "library.list": value = {total:1000, rows:Array.from({length:12}, (_,i) => ({id:p.offset+i+1,title:"Note "+(p.offset+i+1),bytes:110000}))}; break;
+      case "library.list": value = {total:libraryTotal, rows:Array.from({length:Math.min(12, Math.max(0, libraryTotal-p.offset))}, (_,i) => ({id:p.offset+i+1,title:"Note "+(p.offset+i+1),bytes:110000}))}; break;
       case "document.open": value = document; break;
       case "document.window": value = Array.from({length:12}, (_,i) => ({row:p.first+i,kind:4,columns:[128,128],header:i===0})); break;
       case "document.tile":
         if (failures) { replies.push(JSON.stringify({id:request.id,error:"smoke unavailable"})); return true; }
         value = {mask,kind:4,start:p.row*10}; break;
       case "text.tile": value = {mask}; break;
-      case "document.create": value = {document:{...document,id:1001,title:p.name},position:1000,total:1001,window:{token:"draft-created",seq:0,start:0,end:6,text:"# new\n",revision:document.revision,first:0,totalRows:2,chars:6,stagedDirty:false,undo:0,redo:0}}; break;
+      case "document.stat": value = {id:p.id,title:"new.md",revision:document.revision}; break;
+      case "document.remove": libraryTotal--; value = {id:p.id,removed:true}; break;
+      case "document.create": libraryTotal=1001; value = {document:{...document,id:1001,title:p.name},position:1000,total:1001,window:{token:"draft-created",seq:0,start:0,end:6,text:"# new\n",revision:document.revision,first:0,totalRows:2,chars:6,stagedDirty:false,undo:0,redo:0}}; break;
       case "draft.discard": value = {discarded:true}; break;
       case "draft.begin": value = {token:"draft-smoke",seq:0,start:0,end:12,text:"hello world\n",revision:document.revision,first:0,totalRows:2,chars:12,stagedDirty:false,undo:0,redo:0}; break;
       default: throw new Error("Unexpected smoke capability: "+request.method);
@@ -52,7 +54,7 @@ try {
   check(s.rowResource(row).status==="error", "resource error fallback not exercised");
   failures=false; frames(140);
   check(s.rowResource(row).status==="ready", "resource retry failed");
-  frames(1,0x0200|0x2000); frames(40);
+  frames(1,0x0200); frames(1,0x0200|0x0040); frames(1,0x0200); frames(1,0x0200|0x2000); frames(40);
   check(s.mode()==="edit" && s.caret()===0, "editor chord leaked a plain A press");
   s.key("中"); frames(20);
   check(s.dirty() && s.textTiles.size>0, "Unicode source resource failed");
@@ -64,6 +66,10 @@ try {
   s.perform("new"); frames(1); check(s.mode()==="create", "filename dialog missing");
   s.key("new"); s.createDocument(); frames(30);
   check(s.mode()==="edit" && s.doc().id===1001, "create did not enter editor");
+  s.perform("delete"); frames(20); check(s.deleteTarget(), "delete confirmation missing");
+  frames(1,0x4000); frames(14); check(!s.deleteTarget(), "B did not cancel delete");
+  s.perform("delete"); frames(20); s.removeDocument(); frames(50);
+  check(!s.deleteTarget() && libraryTotal===1000 && s.doc().id!==1001, "delete did not refresh the editor");
   std.puts(JSON.stringify({ok:true,frames:ticks,nativeNodeIds:node,uploadedTextures:texture,
-    checks:["offline mount","continuous stick scrolling","table reveal","error fallback","retry","editor","Unicode resource","discard cancellation","offline draft","filename dialog","create-to-editor"]})+"\n");
+    checks:["offline mount","continuous stick scrolling","table reveal","error fallback","retry","editor","Unicode resource","discard cancellation","offline draft","filename dialog","create-to-editor","delete confirmation","delete cancellation","delete refresh"]})+"\n");
 } catch (error) { std.puts(String(error)+"\n"+error.stack+"\n"); std.exit(1); }

@@ -1,18 +1,17 @@
 import { BTN } from "@pocketjs/framework/input";
 export type Bank = "library" | "document";
-export type Action = "new" | "open" | "focus-list" | "search" | "refresh" | "clear-search" | "edit" | "read" | "save" | "link" |
+export type Action = "new" | "delete" | "open" | "search" | "refresh" | "edit" | "read" | "save" | "link" |
   "select" | "copy" | "paste" | "discard" | "focus-document" | "top" | "heading" | "previous-heading" | "end" | "undo" | "redo";
 export const BANKS: Record<Bank, { title: string; columns: number; actions: readonly { label: string; action: Action }[] }> = {
   library: { title: "Files", columns: 1, actions: [
     { label: "New document", action: "new" },
     { label: "Open selected", action: "open" }, { label: "Search files", action: "search" },
-    { label: "Clear search", action: "clear-search" }, { label: "Refresh list", action: "refresh" },
-    { label: "Focus files", action: "focus-list" },
+    { label: "Refresh list", action: "refresh" }, { label: "Delete document...", action: "delete" },
   ] },
   document: { title: "Document", columns: 3, actions: [
-    { label: "Edit / resume", action: "edit" }, { label: "Read", action: "read" }, { label: "Save", action: "save" },
-    { label: "Undo", action: "undo" }, { label: "Redo", action: "redo" }, { label: "Select", action: "select" },
     { label: "Prev heading", action: "previous-heading" }, { label: "Next heading", action: "heading" }, { label: "Follow link", action: "link" },
+    { label: "Edit", action: "edit" }, { label: "Read", action: "read" }, { label: "Save", action: "save" },
+    { label: "Undo", action: "undo" }, { label: "Redo", action: "redo" }, { label: "Select", action: "select" },
     { label: "Copy", action: "copy" }, { label: "Paste", action: "paste" }, { label: "Discard...", action: "discard" },
   ] },
 };

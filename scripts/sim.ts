@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, readdirSync, copyFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, copyFileSync, rmSync, existsSync } from "node:fs";
 import { createWasmUi } from "../runtime/hosts/web/wasm-ops.js";
 import { NODE_TYPE, PROP, ENUMS, BTN } from "../runtime/contracts/spec/spec.ts";
 import { encodePNG } from "../runtime/tests/png.ts";
@@ -9,7 +9,7 @@ import { BANKS, type Action, type Bank } from "../app/commands.ts";
 import type { Doc } from "../app/store.ts";
 const qaRoot = "dist/qa/replay-library";
 rmSync(qaRoot, { recursive: true, force: true }); mkdirSync(qaRoot, { recursive: true });
-for (const name of readdirSync("data/library-v2").filter(n => n.endsWith(".md"))) copyFileSync(`data/library-v2/${name}`, `${qaRoot}/${name}`);
+for (const name of readdirSync("data/library-v2").filter(n => /^note-\d{4}\.md$/.test(n))) copyFileSync(`data/library-v2/${name}`, `${qaRoot}/${name}`);
 const library = new Library(qaRoot); library.index();
 const wasm = await createWasmUi(await Bun.file("runtime/hosts/web/pocketjs.wasm").arrayBuffer(), { width: 400, height: 480 });
 const ops = wasm.ops;
@@ -28,8 +28,27 @@ ops.setProp(auxiliary, PROP.width, 320); ops.setProp(auxiliary, PROP.height, 240
 ops.insertBefore(1, auxiliary, 0);
 ops.__auxiliarySurface = { root: auxiliary, w: 320, h: 240 };
 const requests: string[] = [], replies: { at: number; raw: string; tile: boolean }[] = [];
-let tick = 0, connected = -1, withholdTiles = false, maxPending = 0, maxTiles = 0, maxSlots = 0, loseSeekReply = false;
+let tick = 0, connected = -1, withholdTiles = false, maxPending = 0, maxTiles = 0, maxSlots = 0, loseSeekReply = false, loseRemoveReply = false;
 const checks: string[] = [];
+let treeRequest: string | undefined, lastTree: any;
+const countMethods = new Map<string, number>();
+(globalThis as any).__pocketDevtoolsTransport = { everyFrames: 1,
+  recv: () => { const request = treeRequest; treeRequest = undefined; return request; },
+  send: (raw: string) => { const message = JSON.parse(raw); if (message.t === "tree") lastTree = message.root; },
+};
+function walk(node: any): any[] { return [node, ...(node?.k ?? []).flatMap(walk)]; }
+async function nodes() { treeRequest = JSON.stringify({ t: "getTree" }) + "\n"; await frames(1); return walk(lastTree); }
+async function checkDeck() {
+  const tree = await nodes(); wasm.render();
+  const a = tree.find(n => n.n === "LibraryPadFrame"), b = tree.find(n => n.n === "DocumentPadFrame");
+  const rect = (node: any) => { ops.debugInspect!(node.i); wasm.render(); const xy = ops.debugRectXY!(), wh = ops.debugRectWH!(); ops.debugInspect!(0);
+    return { x: (xy << 16) >> 16, y: xy >> 16, w: wh & 65535, h: wh >>> 16 }; };
+  const left = rect(a), right = rect(b);
+  const previousBottom = s.mode() === "read" ? 268 : 356;
+  check(left.x - 40 === 6 && 360 - right.x - right.w === 6 && right.x - left.x - left.w === 6 &&
+    left.y - previousBottom === 6 && 480 - left.y - left.h === 6 && left.y === right.y && left.h === right.h,
+    `${s.mode()} pads share 6px outer margins, top clearance and inter-panel spacing in the rendered layout`);
+}
 function check(condition: unknown, message: string) { if (!condition) throw new Error(message); checks.push(message); }
 Object.assign(globalThis, {
   ui: ops, __pak: await Bun.file("runtime/dist/3ds/guest/pocketdoc-main.pak").arrayBuffer(), __simHz: 60,
@@ -51,10 +70,11 @@ async function frames(n: number, buttons = 0, touch?: [number, number], analog =
     const d = s.diagnostics(); maxPending = Math.max(maxPending, d.pending); maxTiles = Math.max(maxTiles, d.cachedTiles); maxSlots = Math.max(maxSlots, d.resourceSlots);
     // Host work is explicit and separate. This replay verifies behavior, not hardware performance.
     for (const raw of requests.splice(0)) {
-      const req = JSON.parse(raw);
+      const req = JSON.parse(raw); countMethods.set(req.method, (countMethods.get(req.method) ?? 0) + 1);
       if (req.method === "document.save") throw new Error("Replay must not write the user's test library");
       const result = JSON.stringify(await dispatchOffload(library.methods(), req));
       if (req.method === "draft.seek" && loseSeekReply) { loseSeekReply = false; continue; }
+      if (req.method === "document.remove" && loseRemoveReply) { loseRemoveReply = false; continue; }
       replies.push({ at: tick + 4, tile: req.method === "document.tile", raw: result });
     }
   }
@@ -77,7 +97,7 @@ async function shot(name: string) {
 await frames(2); const loadingA = await shot("loading-a");
 await frames(22); const loadingB = await shot("loading-b");
 check(Buffer.compare(loadingA, loadingB) !== 0, "Skeleton animation advances while the host is offline");
-connected = 1; await frames(220); await shot("read");
+connected = 1; await frames(220); await checkDeck(); await shot("read");
 check(s.total() === 1000 && s.doc()?.id === 1 && s.tiles.size > 20, "Both panes load from the full 1000-file library");
 const original = s.scroll.offset();
 await frames(1, BTN.LTRIGGER); await shot("menu-library");
@@ -132,6 +152,7 @@ check(s.rowResource(tableRow).status === "ready" && s.scroll.offset() === tableO
 s.jump(0, "document"); await frames(100);
 await command("document", "edit"); await frames(35);
 check(s.mode() === "edit" && s.caret() === 0, "R menu confirms Edit once and does not also insert a newline");
+await checkDeck();
 await tap(55, 44); // w, via actual auxiliary touch hit facts
 check(s.dirty() && s.draft()?.text.startsWith("w"), "Touch keyboard updates the draft immediately");
 const beforeSpace = s.draft()!.text;
@@ -142,7 +163,7 @@ await frames(23, 0, [181, 106]);
 check(s.caretDragging() && s.caretVisible(), "Holding space enters caret dragging and keeps the caret visible");
 await frames(1, 0, [205, 106]); await frames(1, 0, [205, 122]); await frames(1);
 check(s.draft()!.text === beforeDrag && s.caret() > caretBeforeDrag && !s.caretDragging(), "Space drag moves across columns and lines without inserting text");
-await tap(211, 128);
+await tap(211, 132);
 await frames(23, 0, [181, 106]); await frames(1, 0, [205, 106]); await frames(1);
 check(s.selecting() && s.selection()[1] > s.selection()[0], "Select and held-space drag create a source selection");
 await frames(1, BTN.RTRIGGER); await shot("selection"); await frames(1); await shot("selection-open");
@@ -171,7 +192,7 @@ check(s.mode() === "read" && s.draft()!.text === beforeRead && s.dirty(), "Visib
 check(!s.selecting(), "Read clears source selection state");
 await tap(170, 219); check(s.mode() === "read" && !s.selecting(), "Select is disabled in reading mode");
 await shot("retained-draft"); await tap(268, 219);
-check(s.mode() === "edit" && s.draft()!.text === beforeRead, "Resume touch button returns to the retained draft");
+check(s.mode() === "edit" && s.draft()!.text === beforeRead, "Edit touch button returns to the retained draft");
 const retained = s.draft()!.text; connected = -2; await frames(20);
 check(s.dirty() && s.draft()?.text === retained, "Disconnect preserves the unsaved draft");
 s.key("u"); const editBeforeUndo = s.draft()!.text;
@@ -266,6 +287,40 @@ check(s.draft()!.text === "# workbench\n\n", "The new document starts with a hea
 s.key("unsaved"); s.seekEditor(0); await frames(30);
 s.perform("discard"); await frames(16); await shot("discard-lowered"); s.discard(); await frames(40);
 check(readFileSync(`${qaRoot}/workbench.md`, "utf8") === "# workbench\n\n", "Discard drops staged edits and preserves the new document's saved contents");
+// A saved short file should reveal only its actual rows, followed by blank paper.
+s.edit(); await frames(35); s.moveCaret(s.draft()!.text.length - s.caret()); s.key("Two lines"); s.save(); await frames(100);
+const shortNodes = await nodes();
+const displayedBands = shortNodes.filter(n => n.n === "DocumentBand" && painted.get(n.i)?.get(PROP.display) !== 1);
+check(s.doc()!.rows < 9 && displayedBands.length === s.doc()!.rows && displayedBands.length < 12,
+  "Saving a short document leaves no pending display slots beyond its last row");
+await shot("short-document");
+s.edit(); await frames(35); s.key("retained "); s.perform("read");
+const editButton = (await nodes()).find(n => n.n === "CopyEditButton");
+check(walk(editButton).some(n => n.x === "Edit") && !walk(editButton).some(n => n.x === "Resume"), "The reader always labels its editor entry Edit, including retained drafts");
+s.perform("discard"); await frames(16); s.discard(); await frames(40);
+await command("library", "delete"); await frames(20); await shot("delete-confirmation");
+check(s.deleteTarget()?.title === "workbench.md" && existsSync(`${qaRoot}/workbench.md`), "Delete names the selected filename and leaves it intact until confirmation");
+await press(BTN.CROSS); await frames(14);
+check(!s.deleteTarget() && existsSync(`${qaRoot}/workbench.md`), "B cancels deletion without touching the file");
+const viewed = s.doc()!.id;
+s.libraryScroll.scrollTo(0, { immediate: true }); s.setSelected(0); await frames(50);
+await command("library", "delete"); await frames(20);
+check(s.deleteTarget()?.id === 1 && s.doc()!.id === viewed, "L Delete targets the selected file rather than the open document");
+await tap(160, 180); await frames(50);
+check(!existsSync(`${qaRoot}/note-0001.md`) && s.doc()!.id === viewed && s.total() === 1000, "Deleting another file refreshes the list while retaining the displayed document");
+s.perform("search"); s.key("workbench"); s.search(); await frames(60);
+check(s.total() === 1, "Search isolates the short document for the last-result deletion");
+await command("library", "delete"); await frames(20); loseRemoveReply = true; await press(BTN.CIRCLE);
+connected = -6; await frames(3); connected = 6; await frames(10); await press(BTN.CIRCLE); await frames(50);
+check(!s.deleteTarget() && !s.doc() && s.total() === 0 && !existsSync(`${qaRoot}/workbench.md`), "Delete survives a lost acknowledgement and reconnect without resurrecting the file");
+const emptyNodes = await nodes();
+check(emptyNodes.filter(n => ["DocumentBand", "FileRow"].includes(n.n) && painted.get(n.i)?.get(PROP.display) !== 1).length === 0,
+  "Deleting the last result shows an empty state instead of permanent skeletons");
+const listRequests = countMethods.get("library.list"); await frames(40);
+check(countMethods.get("library.list") === listRequests, "An empty library result does not repeatedly request its missing first page");
+await shot("empty-results");
+s.perform("search"); for (let i = 0; i < 9; i++) s.key("DEL"); s.search(); await frames(100);
+check(s.total() === 999 && !!s.doc(), "An empty search restores the remaining library without a Clear Search command");
 check(!readFileSync("data/library-v2/note-0513.md", "utf8").includes("local-start during-flight "), "The replay never modifies the user's real library");
 check(maxPending <= 4 && maxTiles <= 72 && maxSlots <= 72, "Pending requests and document resource caches stay bounded throughout navigation");
 const evidence = { frames: tick, simulatedLatencyFrames: 4, checks, inertiaBefore: before, inertiaAfter: after, maxPending, maxTiles, maxSlots,

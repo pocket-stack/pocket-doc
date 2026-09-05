@@ -1,3 +1,4 @@
+import { DECK, deckLayout, keyboardBottom } from "./deck.ts";
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { AuxiliarySurface, Image, Text, View, type NodeMirror } from "@pocketjs/framework/components";
 import { ResourceBoundary, ResourceImage, pending, ready, type TextureResource } from "@pocketjs/framework/resource";
@@ -37,7 +38,7 @@ function LibraryRow(p: { s: Doc; slot: number }) {
   const selected = () => index() === p.s.selected();
   return <View debugName="FileRow" class="absolute left-0 w-[127] h-[24] overflow-hidden" style={{ translateY: index() * FILE_H,
     bgColor: 0xffffffff, gradDir: 1, gradFrom: selected() ? classicPalette("primary").gradFrom : "#ffffff",
-    gradTo: selected() ? classicPalette("primary").gradTo : "#ffffff", display: p.s.total() && index() >= p.s.total() ? 1 : 0 }}>
+    gradTo: selected() ? classicPalette("primary").gradTo : "#ffffff", display: p.s.libraryReady() && index() >= p.s.total() ? 1 : 0 }}>
     <View class="absolute left-0 right-0 bottom-0 h-[1] bg-[#e1e4e8]" />
     <ResourceBoundary state={() => p.s.fileResource(index())} fallback={() => <View class="absolute left-[6] top-[4] w-[110] h-[16]"><Skeleton width={96 - p.slot % 3 * 12} /></View>}>
       {file => <>
@@ -52,7 +53,7 @@ function DocumentRow(p: { s: Doc; slot: number }) {
   const row = createMemo(() => slotRow(p.s.firstRow(), p.slot));
   const spec = createMemo(() => p.s.rowSpec(row()));
   const resource = createMemo(() => p.s.rowResource(row()));
-  return <View debugName="DocumentBand" class="absolute left-0 w-[256] h-[20] overflow-hidden" style={{ translateY: row() * LINE_H,
+  return <View debugName="DocumentBand" class="absolute left-0 w-[256] h-[20] overflow-hidden" style={{ translateY: row() * LINE_H, display: p.s.doc() ? row() < p.s.doc()!.rows ? 0 : 1 : p.s.libraryReady() && !p.s.total() ? 1 : 0,
     bgColor: spec()?.header ? 0xfff0e7df : spec()?.kind === 3 ? 0xfff6f3f0 : 0xffffffff }}>
     <Show when={spec()?.columns}>
       <View class="absolute left-0 right-0 top-0 h-[1] bg-[#c7d0dc]" style={{ display: spec()?.first ? 0 : 1 }} />
@@ -81,10 +82,10 @@ function SourceRow(p: { s: Doc; index: number }) {
 
 function ContextMenu(p: { s: Doc; bank: Bank }) {
   const bank = BANKS[p.bank], width = bank.columns === 1 ? 240 : 348;
-  const cell = (width - 20) / bank.columns;
+  const cell = (width - 20) / bank.columns, height = bank.columns === 1 ? 54 + bank.actions.length * 23 : 192;
   return <View debugName={`Context-${p.bank}`} class="absolute left-0 top-0 w-full h-full"
     style={{ display: p.s.menu() === p.bank ? 0 : 1, bgColor: "#10203855" }}>
-    <ClassicPanel active style={{ posType: 1, insetL: (400 - width) / 2, insetT: 24, width, height: 192 }}>
+    <ClassicPanel active style={{ posType: 1, insetL: (400 - width) / 2, insetT: Math.floor((240 - height) / 2), width, height }}>
       <Text class="absolute left-0 right-0 top-[7] text-center text-xs font-bold text-white">{bank.title}</Text>
       <For each={bank.actions}>{(item, index) => <ClassicFace selected={p.s.commandIndex() === index()} disabled={!p.s.canAction(item.action)}
         style={{ posType: 1, insetL: 10 + index() % bank.columns * cell, insetT: 34 + Math.floor(index() / bank.columns) * (bank.columns === 1 ? 23 : 33), width: cell - 3, height: bank.columns === 1 ? 20 : 29 }}>
@@ -98,10 +99,10 @@ function ContextMenu(p: { s: Doc; bank: Bank }) {
 function Keyboard(p: { s: Doc }) {
   const [pressed, setPressed] = createSignal("");
   const keys = createMemo(() => (p.s.symbols() ? SYMBOLS : LETTERS).flatMap((line, row) => {
-    const values = line.split(" "), width = 304 / values.length;
-    let x = 8;
-    return values.map((value, col) => { const w = row === 3 ? [42, 30, 30, 140, 62][col] : width;
-      const key = { value, x, y: 30 + row * 22, w: w - 2 }; x += w; return key; });
+    const values = line.split(" "), width = (DECK.width - 2 * DECK.gap + 2) / values.length;
+    let x: number = DECK.gap;
+    return values.map((value, col) => { const w = row === 3 ? [42, 30, 30, 142, 66][col] : width;
+      const key = { value, x, y: DECK.keysTop + row * DECK.keyPitch, w: w - 2 }; x += w; return key; });
   }));
   let root: NodeMirror | undefined, downKey = "", dx = 0, dy = 0;
   const release = () => { setPressed(""); p.s.setCaretDragging(false); };
@@ -129,7 +130,7 @@ function Keyboard(p: { s: Doc }) {
     onTap() { if (downKey === "SPACE") p.s.key("SPACE"); },
     onUp: release, onCancel() { downKey = ""; release(); },
   });
-  return <View ref={root} debugName="DocKeyboard" class="absolute left-0 top-[28] w-[320] h-[90]" style={{ display: p.s.mode() === "edit" || p.s.mode() === "search" || p.s.mode() === "create" ? 0 : 1 }}>
+  return <View ref={root} debugName="DocKeyboard" class="absolute left-0 top-[28] w-[320]" style={{ height: keyboardBottom - DECK.bar, display: p.s.mode() === "edit" || p.s.mode() === "search" || p.s.mode() === "create" ? 0 : 1 }}>
     <For each={keys()}>{k => <ClassicFace tone="key" pressed={pressed() === k.value} selected={k.value === "SHIFT" && p.s.shift() !== "off"} disabled={p.s.saving()}
       style={{ posType: 1, height: 20, insetL: k.x, insetT: k.y - 28, width: k.w }}>
       <Show when={k.value === "SHIFT"} fallback={<Text class="absolute left-0 right-0 top-[3] text-xs text-center" style={{ textColor: classicPalette("key", pressed() === k.value).textColor }}>{p.s.shift() !== "off" && k.value.length === 1 ? k.value.toUpperCase() : k.value}</Text>}>
@@ -142,8 +143,9 @@ function Keyboard(p: { s: Doc }) {
 function Deck(p: { s: Doc }) {
   let listPad: NodeMirror | undefined, docPad: NodeMirror | undefined;
   const typing = () => p.s.mode() !== "read";
-  const y = () => typing() ? 118 : 33;
-  const height = () => typing() ? 118 : 201;
+  const geometry = createMemo(() => deckLayout(typing()));
+  const y = () => geometry().y;
+  const height = () => geometry().height;
   const target = () => p.s.mode() === "edit" ? p.s.editorScroll : p.s.scroll;
   const blocked = () => p.s.sheetModal() || !!p.s.menu();
   createEffect(() => { if (p.s.menu() || p.s.mode() === "create") onCleanup(pushTouchBlock()); });
@@ -173,15 +175,20 @@ function Deck(p: { s: Doc }) {
     style={buttonStyle(249, 3, 66, typing())} disabled={blocked() || p.s.saving() || p.s.creating() || p.s.mode() === "create" && !p.s.newName().trim()}
     onPress={() => p.s.mode() === "create" ? p.s.createDocument() : p.s.mode() === "search" ? p.s.search() : p.s.save()} />;
   const select = <ClassicButton debugName="SelectButton" surface="auxiliary" label="Select" selected={p.s.mode() === "edit" && p.s.selecting()} edge="left"
-    style={{ ...buttonStyle(typing() ? 181 : 130, typing() ? y() + 2 : y() + height() - 31, typing() ? 64 : 89, p.s.mode() === "read" || p.s.mode() === "edit"), height: typing() ? 18 : 23 }} disabled={blocked() || p.s.saving() || p.s.mode() !== "edit"}
+    style={{ ...buttonStyle(typing() ? geometry().right + 59 : geometry().right + 8, typing() ? y() + 2 : y() + height() - 31, typing() ? 64 : 90, p.s.mode() === "read" || p.s.mode() === "edit"), height: typing() ? 18 : 23 }} disabled={blocked() || p.s.saving() || p.s.mode() !== "edit"}
     onPress={() => { p.s.setFocus("document"); p.s.toggleSelect(); }} />;
-  const copy = <ClassicButton debugName="CopyEditButton" surface="auxiliary" label={p.s.mode() === "edit" ? "Copy" : p.s.draft() ? "Resume" : "Edit"} edge="right"
-    style={{ ...buttonStyle(typing() ? 244 : 218, typing() ? y() + 2 : y() + height() - 31, typing() ? 66 : 88, p.s.mode() === "read" || p.s.mode() === "edit"), height: typing() ? 18 : 23 }} disabled={blocked() || p.s.saving() || p.s.discardToken() !== undefined || p.s.mode() === "create" || !p.s.doc() || p.s.mode() === "edit" && p.s.selection()[0] === p.s.selection()[1]}
+  const copy = <ClassicButton debugName="CopyEditButton" surface="auxiliary" label={p.s.mode() === "edit" ? "Copy" : "Edit"} edge="right"
+    style={{ ...buttonStyle(typing() ? geometry().right + 122 : geometry().right + 97, typing() ? y() + 2 : y() + height() - 31, typing() ? geometry().rightWidth - 126 : 89, p.s.mode() === "read" || p.s.mode() === "edit"), height: typing() ? 18 : 23 }} disabled={blocked() || p.s.saving() || p.s.discardToken() !== undefined || p.s.mode() === "create" || !p.s.doc() || p.s.mode() === "edit" && p.s.selection()[0] === p.s.selection()[1]}
     onPress={() => { p.s.setFocus("document"); p.s.mode() === "edit" ? p.s.perform("copy") : p.s.edit(); }} />;
   const sheet = <ClassicSheet debugName="DiscardSheet" surface="auxiliary" open={p.s.confirmDiscard()}
     title="Discard unsaved changes?" message="The document on Mac stays unchanged."
     actions={[{ label: "Discard Changes", tone: "danger", onPress: p.s.discard }]}
     cancelLabel="Keep Editing" onCancel={p.s.cancelDiscard} onModalChange={p.s.setSheetModal} />;
+  const deleteName = createMemo((previous: string) => p.s.deleteTarget()?.title.slice(0, 42) ?? previous, "");
+  const deletion = <ClassicSheet debugName="DeleteSheet" surface="auxiliary" open={!!p.s.deleteTarget()}
+    title="Delete document?" message={deleteName()}
+    actions={[{ get label() { return p.s.removing() ? "Deleting..." : "Delete Document"; }, tone: "danger", get disabled() { return p.s.removing() || !p.s.online(); }, onPress: p.s.removeDocument }]}
+    cancelLabel="Cancel" onCancel={p.s.cancelDelete} onModalChange={p.s.setSheetModal} />;
   const keyboard = <Keyboard s={p.s} />;
   return <View debugName="DocDeck" class="relative w-full h-full bg-[#dbe1e9]">
     <View debugName="EditorNavigation" class="absolute left-0 right-0 top-0 h-[28] bg-gradient-to-b from-[#f6f8fb] to-[#c1cad7]">
@@ -191,14 +198,14 @@ function Deck(p: { s: Doc }) {
       <Show when={!typing()}><Text class="absolute right-[9] top-[7] text-xs text-[#405c80]">L / R: actions</Text></Show>
     </View>
     {close}{discard}{save}{keyboard}
-    <ClassicPanel headerHeight={typing() ? 22 : 27} debugName="LibraryPadFrame" active={p.s.focus() === "library"} style={{ posType: 1, insetL: 6, width: 108, insetT: y(), height: height() }}>
+    <ClassicPanel headerHeight={typing() ? 22 : 27} debugName="LibraryPadFrame" active={p.s.focus() === "library"} style={{ posType: 1, insetL: geometry().left, width: geometry().leftWidth, insetT: y(), height: height() }}>
       <View ref={listPad} debugName="LibraryTouchpad" class="absolute left-0 top-0 w-full h-full">
         <Text class="absolute text-xs font-bold" style={{ insetL: 0, insetR: 0, insetT: typing() ? 4 : 8, textAlign: 1, textColor: classicPalette(p.s.focus() === "library" ? "primary" : "neutral").textColor }}>Files</Text>
         <Text class="absolute left-0 right-0 text-center text-xs text-[#6c829e]" style={{ insetT: typing() ? 63 : 89 }}>slide to scroll</Text>
         <Show when={!typing()}><Text class="absolute left-0 right-0 bottom-[11] text-center text-xs text-[#6c829e]">A opens</Text></Show>
       </View>
     </ClassicPanel>
-    <ClassicPanel headerHeight={typing() ? 22 : 27} debugName="DocumentPadFrame" active={p.s.focus() === "document"} style={{ posType: 1, insetL: 122, width: 192, insetT: y(), height: height() }}>
+    <ClassicPanel headerHeight={typing() ? 22 : 27} debugName="DocumentPadFrame" active={p.s.focus() === "document"} style={{ posType: 1, insetL: geometry().right, width: geometry().rightWidth, insetT: y(), height: height() }}>
       <Text class="absolute text-xs font-bold" style={{ insetL: p.s.mode() === "edit" ? 7 : 0, insetR: p.s.mode() === "edit" ? 138 : 0, insetT: typing() ? 4 : 8, textAlign: p.s.mode() === "edit" ? 0 : 1,
         textColor: classicPalette(p.s.focus() === "document" ? "primary" : "neutral").textColor }}>{p.s.mode() === "create" ? "Filename" : p.s.mode() === "edit" ? "Source" : "Document"}</Text>
       <View ref={docPad} debugName="DocumentTouchpad" class="absolute left-0 w-full" style={{ insetT: typing() ? 22 : 27, height: height() - (typing() ? 22 : 60) }}>
@@ -206,7 +213,7 @@ function Deck(p: { s: Doc }) {
       </View>
     </ClassicPanel>
     {select}{copy}
-    {sheet}
+    {sheet}{deletion}
   </View>;
 }
 
@@ -245,14 +252,17 @@ export default function DocApp() {
         <View class="absolute left-0 right-0 top-0" style={{ translateY: -s.libraryScroll.offset() }}>{files}</View>
         <View class="absolute right-0 top-0 bottom-0 w-[1] bg-[#b7c3d2]" />
       </View>
+      <Show when={s.libraryReady() && !s.total()}><Text class="absolute left-[8] top-[40] text-xs text-[#6c829e]">No files</Text></Show>
       <View debugName="DocumentPane" class="absolute left-[136] top-[32] w-[256] h-[194] overflow-hidden">
+        <Show when={s.libraryReady() && !s.total() && !s.doc()}><Text class="absolute left-0 top-[9] text-xs text-[#6c829e]">Hold L to create a document</Text></Show>
         <View class="absolute left-0 top-0 w-[256]" style={{ translateY: -s.scroll.offset(), display: s.mode() === "edit" ? 1 : 0 }}>
           {bands}
         </View>
         <View class="absolute left-0 top-[3] w-[256] h-[190] bg-white overflow-hidden" style={{ display: s.mode() === "edit" ? 0 : 1 }}>
           <Text class="absolute left-0 top-0 text-xs text-[#55769e]">{s.dirty() ? "SOURCE  -  Unsaved changes" : "SOURCE"}</Text>
           <View class="absolute left-0 top-[22] w-[256] h-[162] overflow-hidden">
-            <View class="absolute left-0 top-0 w-[256]" style={{ translateY: -s.editorScroll.offset() }}>
+            <Show when={s.libraryReady() && !s.total() && !s.doc()}><Text class="absolute left-0 top-[9] text-xs text-[#6c829e]">Hold L to create a document</Text></Show>
+        <View class="absolute left-0 top-0 w-[256]" style={{ translateY: -s.editorScroll.offset() }}>
               {source}
               <View debugName="SourceCaret" class="absolute left-0 top-0 w-[1] h-[16] bg-[#246cc3]" style={{ opacity: s.caretVisible() ? 1 : 0,
                 translateY: s.caretRow() * 18,

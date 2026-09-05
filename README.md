@@ -49,14 +49,14 @@ generated documents, SQLite, build products and logs are ignored by Git.
 | Code in reader | Left/right scrolls the first visible overflowing code block horizontally |
 | Editor | Hold SPACE for 350 ms, then drag to move caret; short tap inserts space; arrows and the New 3DS C-stick also move caret |
 | Editor | Right pad scrolls source; the Select touch button arms selection with held-space dragging; COPY copies it |
-| Editor | Top Read returns to reading and retains the draft; Save / START saves; Resume reopens it |
+| Editor | Top Read returns to reading and retains the draft; Save / START saves; Edit reopens it |
 | Editor | Discard opens a sheet; Keep Editing / B cancels; Discard Changes / A confirms |
 | Host | L+R+START returns to Homebrew Launcher |
 
-Hold **L** for a centered file-command list: New document, Open, Search, Clear search,
-Refresh and Focus files. Up/down chooses an item; A runs it. Hold **R** for a
-centered three-column document panel: Edit, Read, Save; Undo, Redo, Select;
-Previous heading, Next heading, Follow link; Copy, Paste, Discard. All four
+Hold **L** for a centered file-command list: New document, Open, Search,
+Refresh and Delete document. Up/down chooses an item; A runs it. Hold **R** for a
+centered three-column document panel: Previous heading, Next heading, Follow link;
+Edit, Read, Save; Undo, Redo, Select; Copy, Paste, Discard. All four
 directions navigate this grid. Unavailable commands are dimmed. B cancels;
 releasing the shoulder closes the panel. After confirmation, the same held
 shoulder must be released before its panel can open again. Menu navigation
@@ -66,6 +66,14 @@ New document opens a separate filename dialog. Enter a name and press A, Enter
 or Create; `.md` is added automatically. The Mac creates the file without
 replacing an existing name, and the 3DS selects it and enters source editing.
 
+Delete document acts on the selected file in the left pane. A confirmation
+sheet names its filename; Cancel/B keeps it and Delete Document/A confirms.
+Save or discard an unsaved draft first. The Mac checks the saved revision and
+moves the file into `.doc/deleted/<operation>.md`, then removes its index/search
+entries. The retained copy allows recovery; deleting the final result shows an
+empty view. Refresh rescans the Mac directory. Clear a search by submitting an
+empty query in Search files.
+
 After touch or circle-pad scrolling leaves the selected file offscreen, the
 next up/down press selects the first visible file. Further presses move normally.
 
@@ -73,8 +81,10 @@ The 3DS panel supports one contact. All controls work with one stylus contact;
 typing and relative caret movement share the same screen without hiding the
 keyboard. The active pad has a blue header, and the bottom navigation bar names the focused pane.
 Editing shows persistent Read, Discard and Save controls. The space key is
-138px wide; the keyboard contains no duplicate Save button. Four 22px key rows
-leave 118px for each pad, including a 96px source gesture area. Select/Copy sit
+140px wide; the keyboard contains no duplicate Save button. Four 22px key rows
+leave 112px for each pad, including a 90px source gesture area. A shared 6px
+grid sets outer margins, spacing between pads and clearance below the keyboard
+or navigation bar, in both reading and editing modes. Select/Copy sit
 in the Source header while editing. The upper screen uses
 an iOS 6 light palette, with a persistent 128-pixel file pane and 256-pixel
 document pane. File labels are 12px. Body text remains 13px, headings 14px, source 12px and document
@@ -88,7 +98,7 @@ activates on release inside, and cancels when the contact slides outside, the
 button becomes disabled or a modal blocks its gesture. Select and Copy form
 adjacent toolbar actions with one shared border; Select retains the blue state
 while selection is active in the editor. Read clears this state; Select is
-disabled in reading mode, and Edit/Resume is the explicit entry to source mode. File selection uses the same blue gradient with
+disabled in reading mode, and Edit is the explicit entry to source mode. File selection uses the same blue gradient with
 white labels. Panel fills are inset so their header cannot cover the rounded rim.
 
 The bevels and action-sheet arrangement reference Apple's archived
@@ -162,7 +172,9 @@ separate from transport**: a pending image or table band substitutes its own
 subtree while input, scrolling and other content continue. The outer image
 view reserves its size; it borrows a texture handle from the bounded cache.
 The resource model supports already-uploaded images as well as text coverage;
-this app does not yet fetch Markdown image attachments.
+this app does not yet fetch Markdown image attachments. Rows beyond a known
+document length are blank, and known empty lists show an empty state. They do
+not render loading fallbacks or repeatedly request nonexistent rows.
 
 At most **four app requests** are outstanding. User commands can displace
 speculative reads; document start/end jumps cancel local interest in reads for the old
@@ -227,6 +239,12 @@ the current window and clears when changing windows. Up to eight dirty Mac
 drafts are retained, each subject to the 4 MiB document limit. Other Mac editors do not participate in the save protocol;
 the hash check detects changes before replacement but cannot lock out an
 uncooperative writer racing the rename.
+
+Delete requests also carry a revision and stable operation identity. A SQLite
+journal records the intent before moving the file. Recovery finishes either
+side of the rename without deleting a newly recreated filename. File IDs
+increase monotonically, including after the highest ID is deleted, so old
+requests cannot accidentally target a newly created document.
 
 The granted library is a flat directory of Markdown files, up to 4 MiB each.
 Requests use database IDs, not device-supplied paths. The LAN transport is paired

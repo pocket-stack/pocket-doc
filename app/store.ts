@@ -32,6 +32,9 @@ export function createDoc() {
   const [status, setStatus] = createSignal("Waiting for Mac...");
   const [online, setOnline] = createSignal(false);
   const [total, setTotal] = createSignal(0);
+  const [libraryReady, setLibraryReady] = createSignal(false);
+  const [deleteTarget, setDeleteTarget] = createSignal<{ id: number; title: string; revision: string; op: string }>();
+  const [removing, setRemoving] = createSignal(false);
   const [doc, setDoc] = createSignal<Document>();
   const [draft, setDraft] = createSignal<Draft>();
   const [caret, setCaret] = createSignal(0);
@@ -151,12 +154,12 @@ export function createDoc() {
     for (const resource of tileResources.values()) resource.dispose();
     tiles.clear(); tileResources.clear(); rowSpecs.clear(); rowChanges.clear();
   };
-  const list = (offset = 0) => request(`list:${offset}`, "library.list", { offset, query: query() }, p => {
-    setTotal(p.total);
+  const list = (offset = 0, refresh = false) => request(`list:${offset}`, refresh ? "library.refresh" : "library.list", { offset, query: query() }, p => {
+    setTotal(p.total); setLibraryReady(true);
     for (let i = 0; i < p.rows.length; i++) { files.set(offset + i, p.rows[i]); fileChanges.notify(offset + i); }
     while (files.size > 96) { const old = files.keys().next().value!; files.delete(old); fileChanges.notify(old); }
 
-    if (!doc() && p.rows[0] && mode() !== "search") open(p.rows[0].id, false, false);
+    if (!doc() && p.rows[0] && mode() !== "search") open(files.get(selected())?.id ?? p.rows[0].id, false, false);
   });
   const open = (id: number, preserve = false, focusAfter = true) => {
     if (dirty() || pendingSeek) { setStatus("Save or discard the current draft first"); return; }
@@ -182,7 +185,7 @@ export function createDoc() {
     if (draft()) { setMode("edit"); return; }
     request("edit", "draft.begin", { id: d.id, revision: d.revision, row: Math.max(0, Math.floor(scroll.offset() / LINE_H)), token: `draft-${d.id}-${ticks}-${Math.floor(Math.random() * 1e9)}` }, p => {
       adoptWindow(p, p.start); editorScroll.scrollTo(p.first * 18, { immediate: true }); setMode("edit"); op = "";
-      setStatus(p.stagedDirty ? "Resumed staged draft" : "Editing document");
+      setStatus(p.stagedDirty ? "Editing retained draft" : "Editing document");
     });
   };
   const createDocument = () => {
@@ -190,7 +193,7 @@ export function createDoc() {
     createOp ||= `create-${ticks}-${Math.floor(Math.random() * 1e9)}`;
     if (request("create", "document.create", { name: newName(), op: createOp }, p => {
       setCreating(false); clearTiles(); setDoc(p.document); adoptWindow(p.window, p.window.start);
-      files.clear(); fileChanges.clear(); setQuery(""); setTotal(p.total); setSelected(p.position);
+      files.clear(); fileChanges.clear(); setQuery(""); setTotal(p.total); setLibraryReady(true); setSelected(p.position);
       libraryScroll.scrollTo(p.position * FILE_H, { immediate: true }); editorScroll.scrollTo(0, { immediate: true }); scroll.scrollTo(0, { immediate: true });
       setMode("edit"); setFocus("document"); setStatus("Document created; ready to edit"); createOp = "";
     }, () => setCreating(false))) { setCreating(true); setStatus("Creating document..."); }
@@ -334,7 +337,7 @@ export function createDoc() {
     saveWanted = true; setSaving(true); setStatus("Saving document on Mac...");
   };
   const search = () => {
-    clearPending(); files.clear(); fileChanges.clear(); setTotal(0); setMode("read"); setFocus("library");
+    clearPending(); files.clear(); fileChanges.clear(); setTotal(0); setLibraryReady(false); setMode("read"); setFocus("library");
     libraryScroll.scrollTo(0, { immediate: true }); setSelected(0); retryAt = 0; list();
   };
   const ensureSelected = () => setSelected(moveListSelection(selected(), 0, libraryScroll.offset(), VIEW_H, total(), FILE_H));
@@ -367,20 +370,42 @@ export function createDoc() {
     setCaretDragging(false); setStatus("Changes discarded");
     if (doc() && online()) open(doc()!.id, true);
   };
+  const beginDelete = () => {
+    if (!canAction("delete")) return;
+    ensureSelected(); const file = files.get(selected()); if (!file) { setStatus("Wait for the file list"); return; }
+    request("delete-info", "document.stat", { id: file.id }, p => {
+      scroll.stop(); libraryScroll.stop(); editorScroll.stop(); setCaretDragging(false);
+      setDeleteTarget({ ...p, op: `delete-${p.id}-${ticks}-${Math.floor(Math.random() * 1e9)}` });
+    });
+  };
+  const cancelDelete = () => { if (!removing()) { setDeleteTarget(undefined); setStatus("Document kept"); } };
+  const removeDocument = () => {
+    const target = deleteTarget(); if (!target || removing() || !online()) return;
+    if (request("delete", "document.remove", { id: target.id, revision: target.revision, op: target.op }, () => {
+      setRemoving(false); clearPending(); setDeleteTarget(undefined);
+      if (doc()?.id === target.id) {
+        clearTiles(); setDoc(undefined); setDraft(undefined); setDirty(false); setMode("read");
+        history.clear(); setHistorySizes(history.sizes()); setSelecting(false); scroll.scrollTo(0, { immediate: true });
+      }
+      files.clear(); fileChanges.clear(); const count = Math.max(0, total() - 1);
+      setTotal(count); setLibraryReady(true); setSelected(Math.max(0, Math.min(selected(), count - 1)));
+      libraryScroll.scrollTo(selected() * FILE_H, { immediate: true }); setFocus("library");
+      setStatus("Document deleted"); if (count) list(Math.floor(selected() / 12) * 12);
+    }, () => setRemoving(false))) { setRemoving(true); setStatus("Deleting document on Mac..."); }
+  };
   const perform = (action: Action) => {
     if (action !== "discard") setConfirmDiscard(false);
     switch (action) {
       case "new": if (!dirty() && !pendingSeek && !discardToken()) { setNewName(""); setMode("create"); setFocus("document"); scroll.stop(); libraryScroll.stop(); } break;
+      case "delete": beginDelete(); break;
       case "open": ensureSelected(); { const item = files.get(selected()); if (item) open(item.id); } break;
-      case "focus-list": setFocus("library"); break;
       case "focus-document": setFocus("document"); break;
       case "search": setMode("search"); setFocus("library"); break;
-      case "clear-search": setQuery(""); search(); break;
       case "undo": if (mode() === "edit" && draft() && !saving()) { const value = history.undo(snapshot()); if (value) restore(value); else if (draft()!.text === cleanText) wantWindow = { history: -1 }; } break;
       case "redo": if (mode() === "edit" && draft() && !saving()) { const value = history.redo(snapshot()); if (value) restore(value); else if (draft()!.text === cleanText) wantWindow = { history: 1 }; } break;
-      case "refresh": clearPending(); files.clear(); fileChanges.clear(); retryAt = 0; break;
+      case "refresh": clearPending(); files.clear(); fileChanges.clear(); setLibraryReady(false); retryAt = 0; list(Math.floor(firstFile() / 12) * 12, true); break;
       case "edit": edit(); break;
-      case "read": setMode("read"); setSelecting(false); setAnchor(caret()); setCaretDragging(false); setStatus(dirty() ? "Draft retained; tap Resume to edit" : "L: Files   R: Document"); break;
+      case "read": setMode("read"); setSelecting(false); setAnchor(caret()); setCaretDragging(false); setStatus(dirty() ? "Draft retained; tap Edit to continue" : "L: Files   R: Document"); break;
       case "save": save(); break;
       case "link": followLink(); break;
       case "select": toggleSelect(); break;
@@ -403,7 +428,9 @@ export function createDoc() {
   const canAction = (action: Action): boolean => {
     if (sheetModal() || saving() || creating()) return false;
     if (action === "new") return online() && !dirty() && !pendingSeek && !discardToken();
-    if (["search", "refresh", "focus-list", "clear-search"].includes(action)) return true;
+    if (action === "delete") return online() && total() > 0 && !dirty() && !pendingSeek && !discardToken();
+    if (action === "search") return true;
+    if (action === "refresh") return online();
     if (action === "open") return online() && !dirty() && total() > 0;
     if (!doc()) return false;
     if (action === "undo" || action === "redo") return mode() === "edit" && (historySizes()[action === "undo" ? 0 : 1] > 0 || draft()?.text === cleanText && (action === "undo" ? draft()?.undo ?? 0 : draft()?.redo ?? 0) > 0);
@@ -420,10 +447,10 @@ export function createDoc() {
     ticks++; setOnline(io.connected());
     const session = io.session();
     if (session > 0 && session !== lastSession) {
-      lastSession = session; clearPending(); retryAt = 0; setSaving(false); saveWanted = false; setCreating(false);
+      lastSession = session; clearPending(); files.clear(); fileChanges.clear(); setLibraryReady(false); retryAt = 0; setSaving(false); saveWanted = false; setCreating(false); setRemoving(false);
       setStatus(dirty() ? "Reconnected - draft retained" : "L: Library   R: Document");
       const current = doc();
-      if (current) request("revalidate", "document.open", { id: current.id }, p => {
+      if (current && !deleteTarget()) request("revalidate", "document.open", { id: current.id }, p => {
         if (current.revision !== p.revision || current.layout !== p.layout) {
           if (dirty() || mode() === "edit") setStatus("Mac revision changed; draft retained");
           else { clearTiles(); setDoc(p); }
@@ -433,7 +460,9 @@ export function createDoc() {
     const pressed = buttons & ~previous; previous = buttons;
     if (sheetModal()) {
       setMenu(undefined);
-      if (confirmDiscard() && pressed & BTN.CROSS) cancelDiscard();
+      if (deleteTarget() && pressed & BTN.CROSS) cancelDelete();
+      else if (deleteTarget() && pressed & BTN.CIRCLE) removeDocument();
+      else if (confirmDiscard() && pressed & BTN.CROSS) cancelDiscard();
       else if (confirmDiscard() && pressed & BTN.CIRCLE) discard();
       return;
     }
@@ -502,7 +531,7 @@ export function createDoc() {
     if (discardToken()) { const token = discardToken(); request("discard", "draft.discard", { token }, () => { if (discardToken() === token) setDiscardToken(undefined); }); }
     pumpEditor();
     const firstFile = Math.max(0, Math.floor(libraryScroll.offset() / FILE_H)), page = Math.floor(firstFile / 12) * 12;
-    if (!files.has(firstFile)) list(page);
+    if (!libraryReady() || firstFile < total() && !files.has(firstFile)) list(page);
     if (total() > page + 12 && !files.has(page + 12)) list(page + 12);
     for (const line of visibleText()) {
       if (textTiles.has(line.key) || inflight.size >= 4) continue;
@@ -555,7 +584,7 @@ export function createDoc() {
   });
   onCleanup(() => { clearPending(); clearTiles(); for (const handle of textTiles.values()) getOps().freeTexture?.(handle); });
   return {
-    mode, setMode, focus, setFocus, menu, commandIndex, canAction, sheetModal, setSheetModal, historySizes, historyBusy, status, online, total, textVersion, doc, draft, caret, query, shift, symbols, selected, setSelected,
+    mode, setMode, focus, setFocus, menu, commandIndex, canAction, sheetModal, setSheetModal, historySizes, historyBusy, status, online, total, libraryReady, deleteTarget, removing, removeDocument, cancelDelete, textVersion, doc, draft, caret, query, shift, symbols, selected, setSelected,
     newName, creating, createDocument, cancelCreate, seeking, seekEditor, discardToken, codeOffset, firstCode, editorBase, editorTotal, caretX, firstRow, firstFile, source, sourceCellWidth, sourceWidth, editorFirst, editorScroll, caretRow, caretVisible, caretDragging, setCaretDragging, dragCaret,
     tiles, rowSpecs, files, textTiles, editorRows, sourceLines, scroll, libraryScroll, activeScroll, dirty, saving, selecting, selection, confirmDiscard,
     key, moveCaret, save, search, activate, edit, jump, open, nextHeading, followLink, toggleSelect, perform, discard, cancelDiscard,

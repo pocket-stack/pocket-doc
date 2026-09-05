@@ -24,27 +24,37 @@ export class Library {
       CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY, name TEXT UNIQUE, title TEXT, bytes INTEGER, modified REAL);
       CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(title, body);
       CREATE TABLE IF NOT EXISTS saves(op TEXT PRIMARY KEY, id INTEGER, old TEXT, revision TEXT, stage TEXT, state TEXT, fingerprint TEXT);
-      CREATE TABLE IF NOT EXISTS creates(op TEXT PRIMARY KEY,name TEXT,stage TEXT,state TEXT);`);
+      CREATE TABLE IF NOT EXISTS creates(op TEXT PRIMARY KEY,name TEXT,stage TEXT,state TEXT);
+      CREATE TABLE IF NOT EXISTS deletes(op TEXT PRIMARY KEY,id INTEGER,name TEXT,revision TEXT,stage TEXT,state TEXT);
+      CREATE TABLE IF NOT EXISTS counters(name TEXT PRIMARY KEY,value INTEGER);
+      INSERT OR IGNORE INTO counters SELECT 'file',coalesce(max(id),0)+1 FROM files;
+      UPDATE counters SET value=max(value,(SELECT coalesce(max(id),0)+1 FROM files)) WHERE name='file';`);
     if (!(this.db.query("PRAGMA table_info(saves)").all() as {name: string}[]).some(c => c.name === "fingerprint")) this.db.exec("ALTER TABLE saves ADD COLUMN fingerprint TEXT");
     this.recover(); this.recoverCreates();
     this.drafts = new Drafts(this.db);
+    this.recoverDeletes();
   }
   index() {
-    const put = this.db.query("INSERT INTO files(name,title,bytes,modified) VALUES (?,?,?,?) ON CONFLICT(name) DO UPDATE SET title=excluded.title,bytes=excluded.bytes,modified=excluded.modified RETURNING id");
-    let count = 0;
+    const put = this.db.query("INSERT INTO files(id,name,title,bytes,modified) VALUES (?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET title=excluded.title,bytes=excluded.bytes,modified=excluded.modified RETURNING id");
+    let count = 0; const found = new Set<string>();
     this.db.transaction(() => {
       for (const name of readdirSync(this.root).sort()) {
         if (!name.endsWith(".md") || lstatSync(join(this.root, name)).isSymbolicLink()) continue;
         const path = join(this.root, name), stat = statSync(path);
         if (!stat.isFile() || stat.size > 4 * 1024 * 1024) continue;
         const previous = this.db.query("SELECT * FROM files WHERE name=?").get(name) as any;
-        count++;
+        count++; found.add(name);
         if (previous?.modified === stat.mtimeMs && previous?.bytes === stat.size) continue;
         const body = readFileSync(path, "utf8");
         const title = (/^# (.+)$/m.exec(body)?.[1] ?? name).slice(0, 100);
-        const row = put.get(name, title, stat.size, stat.mtimeMs) as { id: number };
+        const id = previous?.id ?? (this.db.query("UPDATE counters SET value=value+1 WHERE name='file' RETURNING value-1 AS id").get() as { id: number }).id;
+        const row = put.get(id, name, title, stat.size, stat.mtimeMs) as { id: number };
         this.db.query("DELETE FROM search WHERE rowid=?").run(row.id);
         this.db.query("INSERT INTO search(rowid,title,body) VALUES(?,?,?)").run(row.id, title, body);
+      }
+      for (const row of this.db.query("SELECT id,name FROM files").all() as { id: number; name: string }[]) if (!found.has(row.name)) {
+        this.db.query("DELETE FROM search WHERE rowid=?").run(row.id);
+        this.db.query("DELETE FROM files WHERE id=?").run(row.id); this.cache.delete(row.id);
       }
     })();
     return count;
@@ -196,6 +206,56 @@ export class Library {
     return { document, position, total: this.list().total,
       window: this.beginDraft({ id: item.id, revision: document.revision, row: 0, token: `draft-${hash(p.op).slice(0, 32)}` }) };
   }
+  stat(id: number) {
+    const source = this.read(id);
+    const row = this.db.query("SELECT title,name FROM files WHERE id=?").get(id) as { title: string; name: string };
+    return { id, title: row.name, revision: hash(source) };
+  }
+  remove(p: { id: number; revision: string; op: string }) {
+    integer(p.id, 1000000);
+    if (!/^[a-zA-Z0-9-]{8,80}$/.test(p.op) || typeof p.revision !== "string") throw new Error("Invalid delete identity");
+    const known = this.db.query("SELECT * FROM deletes WHERE op=?").get(p.op) as { id: number; revision: string } | null;
+    if (known && (known.id !== p.id || known.revision !== p.revision)) throw new Error("Delete operation identity conflict");
+    if (!known) {
+      if (this.stat(p.id).revision !== p.revision) throw new Error("Conflict: document changed on Mac; nothing deleted");
+      if (this.db.query("SELECT 1 FROM drafts WHERE id=? AND closed=0 AND dirty=1").get(p.id)) throw new Error("Save or discard this document's draft first");
+      const name = (this.db.query("SELECT name FROM files WHERE id=?").get(p.id) as { name: string }).name;
+      const archive = join(this.root, ".doc/deleted"); mkdirSync(archive, { recursive: true });
+      if (realpathSync(archive) !== archive) throw new Error("Deleted directory left the grant");
+      const stage = join(archive, p.op + ".md");
+      if (existsSync(stage)) throw new Error("Delete archive identity conflict");
+      this.db.query("INSERT INTO deletes VALUES(?,?,?,?,?,'prepared')").run(p.op, p.id, name, p.revision, stage);
+    }
+    this.recoverDeletes();
+    const state = this.db.query("SELECT state FROM deletes WHERE op=?").get(p.op) as { state: string };
+    if (state.state !== "deleted") throw new Error("Delete conflict; document retained");
+    return { id: p.id, removed: true };
+  }
+  private recoverDeletes() {
+    // The journal commits before the rename. A retained copy makes retries and
+    // crashes after the rename recoverable without touching a newly recreated file.
+    this.db.transaction(() => {
+      for (const row of this.db.query("SELECT * FROM deletes WHERE state='prepared'").all() as { op: string; id: number; name: string; revision: string; stage: string }[]) {
+        if (!existsSync(row.stage)) {
+          let current: string;
+          try { current = hash(this.read(row.id)); }
+          catch { this.db.query("UPDATE deletes SET state='conflict' WHERE op=?").run(row.op); continue; }
+          if (current !== row.revision) {
+            this.db.query("UPDATE deletes SET state='conflict' WHERE op=?").run(row.op); continue;
+          }
+          renameSync(this.path(row.id), row.stage);
+        }
+        if (lstatSync(row.stage).isSymbolicLink() || hash(readFileSync(row.stage, "utf8")) !== row.revision) throw new Error("Delete archive changed; retained for recovery");
+        for (const path of [dirname(row.stage), this.root]) {
+          const fd = openSync(path, "r"); try { fsyncSync(fd); } finally { closeSync(fd); }
+        }
+        this.db.query("DELETE FROM search WHERE rowid=?").run(row.id);
+        this.db.query("DELETE FROM files WHERE id=?").run(row.id);
+        this.db.query("UPDATE drafts SET source='',undo='[]',redo='[]',reply='',closed=1 WHERE id=?").run(row.id);
+        this.db.query("UPDATE deletes SET state='deleted' WHERE op=?").run(row.op); this.cache.delete(row.id);
+      }
+    }).immediate();
+  }
   private recoverCreates() {
     for (const row of this.db.query("SELECT * FROM creates WHERE state='prepared'").all() as { op: string; name: string; stage: string }[]) {
       const target = join(this.root, row.name);
@@ -234,6 +294,9 @@ export class Library {
       "text.tile": wrap(p => { if (typeof p.text !== "string" || p.text.length > 100) throw new Error("Text tile budget exceeded");
         return { mask: p.cellWidth === undefined ? raster({ text: p.text, start: 0, end: p.text.length, kind: 3 }) : rasterSource(p.text, p.cellWidth) }; }),
       "document.create": wrap(p => this.create(p)),
+      "document.stat": wrap(p => this.stat(p.id)),
+      "document.remove": wrap(p => this.remove(p)),
+      "library.refresh": wrap(p => { this.index(); return this.list(p.query, p.offset); }),
       "draft.begin": wrap(p => this.beginDraft(p)),
       "draft.seek": wrap(p => this.drafts.seek(p)),
       "draft.save": wrap(p => this.saveDraft(p)),

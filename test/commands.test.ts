@@ -12,8 +12,8 @@ test("only L/R open menus and direction movement stays in its command grid", () 
   expect(moveCommand("document", 2, BTN.DOWN)).toBe(5);
   expect(moveCommand("document", 5, BTN.LEFT)).toBe(4);
   expect(moveCommand("document", 11, BTN.DOWN)).toBe(11);
-  expect(BANKS.document.actions[3].action).toBe("undo");
-  expect(BANKS.document.actions[4].action).toBe("redo");
+  expect(BANKS.document.actions[6].action).toBe("undo");
+  expect(BANKS.document.actions[7].action).toBe("redo");
 });
 
 test("offscreen selection enters the current viewport before applying further movement", () => {
