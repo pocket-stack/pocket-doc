@@ -28,8 +28,9 @@ for local,remote in [('.local/pair.key','/pocketjs/offload/'+sys.argv[2]+'.key')
 old='/3DS/pocketfolio-main.3dsx'
 try:
     previous=io.BytesIO(); ftp.retrbinary('RETR '+old,previous.write)
-except ftplib.error_perm as error:
-    if not str(error).startswith('550'): raise
+except (ftplib.error_perm, ftplib.error_temp) as error:
+    # ftpd uses 450 ENOENT for a removed launcher; do not swallow other 450 errors.
+    if not str(error).startswith('550') and str(error) != '450 No such file or directory': raise
 else:
     digest=hashlib.sha256(previous.getvalue()).hexdigest()
     expected='73d16cf762440e43fefd8824a249856f2ae9fbaaab9b1d958f57674e8b58243a'

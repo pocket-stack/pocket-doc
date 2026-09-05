@@ -34,12 +34,17 @@ guest and the runtime Wasm artifact. Only the QA directory is replaced.
 
 ## Current deployment
 
-The whole-document revision is built and awaiting ftpd at 172.20.12.37:5000.
+The whole-document revision and app-scoped pairing key are installed at
+172.20.12.37:5000 with **byte-exact FTP readback**. The launcher is
+`/3DS/pocketdoc-main.3dsx`; the matching Mac provider has been restarted.
 Its production binary is **1,688,560 bytes**, SHA-256
 `124c2dfe190525b0b9d425e1123cc4397c5cbb2256985cc03d607864d6a4cc9a`.
 Application and framework PR checks pass.
-It has not yet been installed or physically accepted. The device receipts
-below describe earlier builds, including the user's accepted UX improvements.
+Physical launch and interaction acceptance of this revision remain pending.
+The deployment script also accepts ftpd's exact `450 No such file or directory`
+reply when the old Folio launcher has already been removed. Other temporary
+FTP failures still fail deployment. The device receipts below describe earlier
+builds, including the user's accepted UX improvements.
 
 ## Physical device
 
