@@ -51,11 +51,35 @@ The new interaction revision adds the light dual-pane layout, four shoulder
 command banks, split pads, resource fallbacks and tables. Its production native
 build passes. **The interaction build and app-scoped pairing key are installed
 and verified by byte-exact FTP readback** at 172.20.12.37:5000. The matching Mac
-provider has been restarted and is waiting for Pocket Folio to launch.
-Physical interaction acceptance remains pending. Performance testing is
-deferred until the interaction review is accepted. Prior save receipts do not
-validate this new interface.
+provider was restarted. On launch, the user reported **FAILED: stack overflow**;
+the provider stayed at zero frames. A native ARM capture reproduced the same
+exception before the first frame. The Bun/Wasm replay had missed this failure.
 
 The review build is **1,640,516 bytes**, SHA-256
 `508e8cb2eacbc0c960693ddf4ae678a276dd9fe71d793bafbb60c78b9a7edfcd`.
 Its runtime pin is `7659028790d0a92b6bef7d74c45ede75fa73e28a`.
+
+## Startup stack regression
+
+Nested resource fallbacks and pane wrappers retained a deep chain of synchronous
+children/effect construction. The fix constructs fixed row/menu subtrees before
+inserting them into their parent panes. The framework creates image containers
+before constructing their deferred content and removes an unnecessary conditional
+component wrapper. **The 3DS QuickJS stack limit remains 192 KiB.**
+
+The compiled guest now passes **601 frames in QuickJS with a 128 KiB stack**,
+including offline startup, table texture reveal, error fallback, retry, editor
+entry, Unicode text and draft retention. This check runs in application CI.
+The original bundle failed even its offline startup at that limit. Stack use
+depends on the CPU/compiler; the Mac check complements the native ARM gate.
+The 830-frame Wasm interaction replay and 11 application tests also pass.
+
+The fixed ARM capture boots successfully and writes both the 400×240 upper
+screen and 320×240 lower screen plus its completion marker. The captures show
+the light interface and animated-resource placeholders. The **fixed production
+build and pairing key are installed with byte-exact FTP readback**. The binary
+is **1,639,940 bytes**, SHA-256
+`7c70bae6c0f5e3d5d296378fd8e09aa7afa1419455b2b0bc64bdf53ed125160e`,
+using runtime `08b20a4a` with the original 192 KiB stack limit. Physical relaunch
+and interaction acceptance remain pending. Performance testing remains
+deferred until the interaction review is accepted.

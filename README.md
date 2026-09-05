@@ -142,6 +142,8 @@ bun runtime/node_modules/typescript/bin/tsc --noEmit
 bun run 3ds --pocket-only
 bun runtime/tools/wasm.ts
 bun scripts/sim.ts
+# Install the QuickJS CLI once with: brew install quickjs
+qjs --std --stack-size 131072 scripts/quickjs-smoke.js
 ```
 
 The simulator writes images and behavioral/caching evidence under `dist/qa`.
@@ -149,6 +151,12 @@ It replays button chords and auxiliary touch hit facts with delayed provider
 replies. **Mac simulation is not a 3DS performance result.** Native worker telemetry is written by
 the running provider; installation readback, native rendering, live IO and
 physical touch acceptance are separate receipts.
+
+The QuickJS smoke check executes the compiled guest with a **128 KiB stack**
+and stub host operations. It covers startup, pending/ready/error resources,
+table textures, source editing, Unicode resources and disconnection. CI runs
+this check because a Bun/Wasm replay does not exercise QuickJS's recursive
+interpreter stack. Native ARM capture remains a separate validation gate.
 
 See [validation receipts](docs/VALIDATION.md) for measured results and the
 remaining device acceptance of the interaction revision.

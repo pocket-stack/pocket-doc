@@ -201,6 +201,14 @@ function Deck(p: { s: Folio }) {
 export default function FolioApp() {
   const s = createFolio();
   (globalThis as any).__folio = s;
+  // These slot sets are fixed. Construct sibling subtrees before their pane
+  // wrappers, so each mount returns before the next parent begins spreading
+  // children. All reactive rows remain owned by the application root.
+  const files = SLOTS.map(slot => <LibraryRow s={s} slot={slot} />);
+  const bands = SLOTS.map(slot => <DocumentRow s={s} slot={slot} />);
+  const source = SLOTS.map(index => <SourceRow s={s} index={index} />);
+  const menus = (Object.keys(BANKS) as Bank[]).map(bank => <ContextMenu s={s} bank={bank} />);
+  const deck = <Deck s={s} />;
   return <>
     <View debugName="PocketFolio" class="relative w-full h-full bg-white overflow-hidden">
       <View class="absolute left-0 right-0 top-0 h-[32] bg-gradient-to-b from-[#a9bcd3] via-[#7d9cbe] to-[#55789f]">
@@ -212,24 +220,24 @@ export default function FolioApp() {
         <View class="absolute right-[8] top-[13] w-[5] h-[5] rounded-full" style={{ bgColor: s.online() ? 0xffd1ecc8 : 0xffbdd4ee }} />
       </View>
       <View debugName="LibraryPane" class="absolute left-0 top-[32] w-[128] h-[194] bg-white overflow-hidden">
-        <View class="absolute left-0 right-0 top-0" style={{ translateY: -s.libraryScroll.offset() }}><For each={SLOTS}>{slot => <LibraryRow s={s} slot={slot} />}</For></View>
+        <View class="absolute left-0 right-0 top-0" style={{ translateY: -s.libraryScroll.offset() }}>{files}</View>
         <View class="absolute right-0 top-0 bottom-0 w-[1] bg-[#b7c3d2]" />
         <Show when={s.focus() === "library"}><View class="absolute left-0 right-0 top-0 h-[2] bg-[#397dce]" /></Show>
       </View>
       <View debugName="DocumentPane" class="absolute left-[136] top-[32] w-[256] h-[194] overflow-hidden">
         <View class="absolute left-0 top-0 w-[256]" style={{ translateY: -s.scroll.offset(), display: s.mode() === "edit" ? 1 : 0 }}>
-          <For each={SLOTS}>{slot => <DocumentRow s={s} slot={slot} />}</For>
+          {bands}
         </View>
         <View class="absolute left-0 top-[3] w-[256] h-[190] overflow-hidden" style={{ display: s.mode() === "edit" ? 0 : 1 }}>
           <Text class="absolute left-0 top-0 text-xs text-[#55769e]">{s.dirty() ? "SOURCE  -  Unsaved changes" : "SOURCE"}</Text>
-          <For each={SLOTS}>{index => <SourceRow s={s} index={index} />}</For>
+          {source}
         </View>
       </View>
       <View class="absolute left-0 right-0 bottom-0 h-[14] bg-gradient-to-b from-[#edf1f6] to-[#d5deea]">
         <Text class="absolute left-[6] top-0 text-xs text-[#516984]">{s.status().slice(0, 62)}</Text>
       </View>
-      <For each={Object.keys(BANKS) as Bank[]}>{bank => <ContextMenu s={s} bank={bank} />}</For>
+      {menus}
     </View>
-    <AuxiliarySurface><Deck s={s} /></AuxiliarySurface>
+    <AuxiliarySurface>{deck}</AuxiliarySurface>
   </>;
 }
