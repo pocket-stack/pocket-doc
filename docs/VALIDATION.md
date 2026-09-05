@@ -33,11 +33,13 @@ Initial telemetry exposed slow frames during loading and interaction, including
 a maximum CPU measurement of 141,004 microseconds. That build expanded coverage
 pixels in guest JavaScript and mounted the keyboard when entering the editor.
 The current build uses native bounded coverage decoding and precreated keyboard
-and source rows. **The optimized build has not yet been installed or measured
-on the device**; ftpd is unavailable while the initial application is running.
+and source rows. **The optimized build is installed and verified by byte-exact
+FTP readback**: 1,614,116 bytes, SHA-256
+`78358713fa5507f498961c44bc290bad4de1a883191ecbb43dd1211c556a2b57`.
+The provider was restarted against the current code. Physical scrolling and
+editing acceptance of this build remains pending.
 
-To complete acceptance, return with L+R+START, open ftpd, deploy the current
-binary, restart the provider and launch Pocket Folio. Exercise flings, rapid
+To complete acceptance, exit ftpd and launch Pocket Folio. Exercise flings, rapid
 minimap jumps, heading navigation, source editing, save and reconnect while
 recording frame-count deltas and CPU maxima. Inertial movement, arriving text,
 touch responsiveness and persistence each require observation.

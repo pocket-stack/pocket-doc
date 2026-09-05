@@ -76,6 +76,11 @@ multi-document editing and an IME are outside this version. Existing Unicode
 text is rendered through Mac-generated coverage; the touch keyboard enters
 Latin text and Markdown punctuation.
 
+Keystrokes update the draft and caret locally. ASCII source lines also render
+locally; changed lines containing non-ASCII text require a new Mac-rendered
+texture, so their visual echo still depends on the network. The current editor
+pauses text input while a save is pending.
+
 ## Saving and disconnection
 
 Save requests include the source revision and a unique operation identity.
