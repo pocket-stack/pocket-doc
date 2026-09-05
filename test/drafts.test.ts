@@ -3,6 +3,8 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync, readdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Library } from "../host/library.ts";
+// These end-to-end cases include full font layout and fsync on shared CI Macs.
+// Their timeout is not a handheld frame-time budget.
 const fixture = () => {
   const root = mkdtempSync(join(tmpdir(), "doc-draft-"));
   const original = "# Long source\n\n" + Array.from({ length: 4000 }, (_, i) => `Line ${i}: a measured record with 中文 and 😀.\n`).join("");
@@ -33,7 +35,7 @@ test("whole-document draft stages distant edits without writing the source and s
     expect(text.match(/Distant edit/g)).toHaveLength(1);
     expect(text).toContain("Line 3999:");
   } finally { f.close(); }
-});
+}, 30000);
 
 test("staged draft history crosses windows and discard leaves the Mac source unchanged", () => {
   const f = fixture();
@@ -49,7 +51,7 @@ test("staged draft history crosses windows and discard leaves the Mac source unc
     expect(readFileSync(join(f.root, "long.md"), "utf8")).toBe(f.original);
     expect(() => f.library.drafts.seek({ token: first.token, seq: redo.seq, op: "seek-test-00004", row: 0 })).toThrow("closed");
   } finally { f.close(); }
-});
+}, 30000);
 
 test("draft conflicts retain staged changes and reject invalid windows", () => {
   const f = fixture();
@@ -61,7 +63,7 @@ test("draft conflicts retain staged changes and reject invalid windows", () => {
     expect(() => f.library.saveDraft({ id: 1, revision: doc.revision, token: d.token, seq: d.seq, op: "save-draft-00002" })).toThrow("Conflict");
     expect(f.library.drafts.content(d.token, d.seq).source).toBe(f.original);
   } finally { f.close(); }
-});
+}, 30000);
 
 test("new documents are exclusive, idempotent, indexed and ready for full editing", () => {
   const f = fixture();
@@ -75,7 +77,7 @@ test("new documents are exclusive, idempotent, indexed and ready for full editin
     expect(readdirSync(f.root).filter(name => name.endsWith(".md"))).toHaveLength(2);
     expect(readFileSync(join(f.root, "long.md"), "utf8")).toBe(f.original);
   } finally { f.close(); }
-});
+}, 30000);
 
 
 test("create recovers a fsynced staging file left before its journal insert", () => {
@@ -86,4 +88,4 @@ test("create recovers a fsynced staging file left before its journal insert", ()
     expect(value.window.text).toBe("# Recovered\n\n");
     expect(readFileSync(join(f.root, "Recovered.md"), "utf8")).toBe("# Recovered\n\n");
   } finally { f.close(); }
-});
+}, 30000);

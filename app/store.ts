@@ -42,10 +42,10 @@ export function createDoc() {
   const [codeVersion, setCodeVersion] = createSignal(0);
   const codeOffsets = new Map<number, number>();
   let localVersion = 0, saveWanted = false, createOp = "", stickX = 0, stickY = 0;
-  let wantWindow: { row?: number; offset?: number; history?: -1 | 1 } | undefined;
+  let wantWindow: { row?: number; offset?: number; history?: -1 | 1; caretColumn?: number } | undefined;
   const deferredKeys: string[] = [];
   let flushingKeys = false;
-  let pendingSeek: { payload: DraftSeek; version: number; sentText: string; first: number } | undefined;
+  let pendingSeek: { payload: DraftSeek; version: number; sentText: string; first: number; caretColumn?: number } | undefined;
   const [query, setQuery] = createSignal("");
   const [shift, setShift] = createSignal<"off" | "once" | "locked">("off");
   const [symbols, setSymbols] = createSignal(false);
@@ -77,7 +77,12 @@ export function createDoc() {
   const editorScroll = createScroller({ max: () => Math.max(0, editorTotal() * 18 - 162), extent: () => 162 });
   const editorFirst = createMemo(() => Math.max(0, Math.floor(editorScroll.offset() / 18)));
   const editorRows = createMemo(() => source().slice(Math.max(0, editorFirst() - editorBase()), Math.max(0, editorFirst() - editorBase() + 10)));
-  const caretRow = createMemo(() => editorBase() + Math.max(0, source().findIndex(r => caret() >= r.start && caret() <= r.end)));
+  const caretRow = createMemo(() => {
+    const rows = source(), found = rows.findIndex(r => caret() >= r.start && caret() <= r.end);
+    // A non-EOF window ending at a newline has a caret position at the start
+    // of the next global row, even while that row's text has not arrived.
+    return editorBase() + (found >= 0 ? found : caret() > (rows.at(-1)?.end ?? 0) ? rows.length : Math.max(0, rows.length - 1));
+  });
   const caretX = () => { const r = source()[caretRow() - editorBase()]; return sourceWidth((r?.text ?? "").slice(0, caret() - (r?.start ?? 0))); };
   const blink = createCaretBlink({ onChange: setCaretVisible });
   createEffect(() => blink.setActive((mode() === "create" || mode() === "edit" && focus() === "document") && !sheetModal() && !menu()));
@@ -206,9 +211,9 @@ export function createDoc() {
       else if (from < 0 || from + 10 > source().length && d.end < d.chars) wantWindow = { row: editorFirst() };
     }
     if (!pendingSeek && (wantWindow || saveWanted)) {
-      const target = wantWindow ?? { row: editorFirst() }; wantWindow = undefined;
+      const { caretColumn, ...target } = wantWindow ?? { row: editorFirst() }; wantWindow = undefined;
       pendingSeek = { payload: { token: d.token, seq: d.seq, op: `seek-${ticks}-${Math.floor(Math.random() * 1e9)}`, ...target,
-        ...(d.text !== cleanText ? { patch: { start: d.start, end: d.end, text: d.text } } : {}) }, version: localVersion, sentText: d.text, first: d.first };
+        ...(d.text !== cleanText ? { patch: { start: d.start, end: d.end, text: d.text } } : {}) }, version: localVersion, sentText: d.text, first: d.first, caretColumn };
     }
     const pending = pendingSeek; if (!pending) return;
     if (request("seek", "draft.seek", pending.payload, p => {
@@ -221,7 +226,14 @@ export function createDoc() {
         setDraft({ ...current, end: current.start + pending.sentText.length, seq: p.seq, totalRows: p.totalRows, chars: p.chars, stagedDirty: p.stagedDirty, undo: p.undo, redo: p.redo });
         setDirty(p.stagedDirty || current.text !== cleanText); wantWindow ??= { row: pending.payload.row, offset: pending.payload.offset };
       } else {
-        adoptWindow(p, pending.payload.offset ?? absolute);
+        let target = pending.payload.offset ?? absolute;
+        if (pending.caretColumn !== undefined && pending.payload.row !== undefined) {
+          const rows = rowsOf(p.text, p.end < p.chars), row = rows[Math.max(0, Math.min(rows.length - 1, pending.payload.row - p.first))];
+          let cells = 0; target = p.start + row.start;
+          for (const char of row.text) { const width = char.codePointAt(0)! > 255 ? 2 : 1; if (cells + width > pending.caretColumn) break; cells += width; target += char.length; }
+        }
+        if (/[\uDC00-\uDFFF]/.test(p.text[target - p.start] ?? "")) target += target < absolute ? -1 : 1;
+        adoptWindow(p, target);
         if (pending.payload.history) editorScroll.scrollTo(p.first * 18, { immediate: true });
         flushingKeys = true;
         for (let n = 0; n < 64 && deferredKeys.length; n++) {
@@ -311,7 +323,7 @@ export function createDoc() {
     const next = moveSourceCaret(draft()?.text ?? "", caret(), dx, dy, SOURCE_COLUMNS);
     const row = caretRow() - editorBase();
     if (dy && (row + dy < 0 || row + dy >= source().length)) {
-      wantWindow = { row: Math.max(0, caretRow() + dy) }; editorScroll.scrollTo(Math.max(0, caretRow() + dy - 4) * 18);
+      wantWindow = { row: Math.max(0, caretRow() + dy), caretColumn: caretX() / sourceCellWidth }; editorScroll.scrollTo(Math.max(0, caretRow() + dy - 4) * 18);
     }
     moveCaret(next - caret());
   };

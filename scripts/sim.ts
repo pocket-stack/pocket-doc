@@ -246,6 +246,10 @@ const fill = "z".repeat(768 - s.draft()!.text.length); s.key(fill); s.key("q");
 check(s.diagnostics().deferredKeys === 1, "Input beyond the local window budget is retained in a bounded queue");
 await frames(90);
 check(s.diagnostics().deferredKeys === 0 && s.draft()!.text[s.caret() - 1] === "q", "Boundary typing continues after staging without losing the queued character");
+s.seekEditor(1700); await frames(50); s.moveCaret(s.draft()!.text.length - s.caret()); await frames(50);
+// Find the actual last loaded row after prefetch settles, then cross it once.
+s.moveCaret(s.draft()!.text.length - s.caret()); const lastLoaded = s.caretRow(); s.dragCaret(0, 1); await frames(40);
+check(s.caretRow() === lastLoaded + 1, "One downward caret movement crosses a source window boundary exactly once");
 s.seekEditor(1700); await frames(50); s.moveCaret(-s.caret());
 const deleteAt = s.draft()!.start; s.key("DEL"); await frames(60);
 check(s.draft()!.start + s.caret() === deleteAt - 1 && s.diagnostics().deferredKeys === 0, "Backspace at a window boundary loads the previous source and deletes once");
