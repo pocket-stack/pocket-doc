@@ -30,12 +30,12 @@ Object.assign(globalThis, {
 (0, eval)(await Bun.file("runtime/dist/3ds/guest/pocketfolio-main.js").text());
 const s = (globalThis as any).__folio as Folio;
 let hit: number | undefined;
-async function frames(n: number, buttons = 0, touch?: [number, number]) {
+async function frames(n: number, buttons = 0, touch?: [number, number], analog = 0x8080) {
   if (touch && hit === undefined) { wasm.render(); hit = ops.hitTestBounds!(touch[0] + 40, touch[1] + 240); }
   if (!touch) hit = undefined;
   for (let i = 0; i < n; i++) {
     tick++;
-    (globalThis as any).frame(buttons, 0x8080, touch ? [touch[0] | touch[1] << 9] : [], touch ? [hit] : [], touch ? [1] : []);
+    (globalThis as any).frame(buttons, analog, touch ? [touch[0] | touch[1] << 9] : [], touch ? [hit] : [], touch ? [1] : []);
     wasm.tick();
     const d = s.diagnostics(); maxPending = Math.max(maxPending, d.pending); maxTiles = Math.max(maxTiles, d.cachedTiles); maxSlots = Math.max(maxSlots, d.resourceSlots);
     // Host work is explicit and separate. This replay verifies behavior, not hardware performance.
@@ -65,12 +65,13 @@ await frames(1); await frames(1, BTN.RTRIGGER); await shot("menu-document");
 check(s.menu() === "document" && s.scroll.offset() === original, "Holding R opens its menu without jumping");
 await frames(1);
 
-await tap(17, 132); await frames(40);
+s.jump(0.4, "library"); await frames(40);
 const listJump = s.libraryScroll.offset();
 await press(BTN.DOWN);
 check(s.selected() === Math.floor(listJump / 24) && Math.abs(s.libraryScroll.offset() - listJump) < 24,
-  "D-pad after minimap selects the first visible file without returning to the old selection");
-check(s.scroll.offset() === original, "Library minimap leaves document offset unchanged");
+  "D-pad after leaving selection offscreen selects the first visible file without returning to the old selection");
+check(s.scroll.offset() === original, "Library navigation leaves document offset unchanged");
+await tap(40, 55); check(s.focus() === "library", "Tapping the left pad focuses files without opening a document");
 s.libraryScroll.stop(); s.jump(0, "library"); await frames(40);
 await frames(1, 0, [75, 180]); await frames(1, 0, [75, 160]); await frames(1, 0, [75, 140]); await frames(1);
 check(s.libraryScroll.offset() > 20 && s.scroll.offset() === original, "Left touchpad scrolls only the file list");
@@ -95,10 +96,18 @@ await press(BTN.RTRIGGER | BTN.CIRCLE); await frames(35);
 check(s.mode() === "edit" && s.caret() === 0, "R+A opens editor once and does not also insert a newline");
 await tap(55, 44); // w, via actual auxiliary touch hit facts
 check(s.dirty() && s.draft()?.text.startsWith("w"), "Touch keyboard updates the draft immediately");
-await tap(183, 219); // embedded Select entry
-await frames(1, 0, [205, 186]); await frames(1, 0, [225, 186]); await frames(1, 0, [245, 186]); await frames(1);
-check(s.selecting() && s.selection()[1] > s.selection()[0], "Embedded Select and right pad drag create a source selection");
-await frames(1, BTN.ZL); await shot("selection"); await frames(1);
+const beforeSpace = s.draft()!.text;
+await tap(181, 121);
+check(s.draft()!.text === beforeSpace.slice(0, 1) + " " + beforeSpace.slice(1), "A short space tap inserts exactly one local space");
+const beforeDrag = s.draft()!.text, caretBeforeDrag = s.caret();
+await frames(23, 0, [181, 121]);
+check(s.caretDragging() && s.caretVisible(), "Holding space enters caret dragging and keeps the caret visible");
+await frames(1, 0, [205, 121]); await frames(1, 0, [205, 137]); await frames(1);
+check(s.draft()!.text === beforeDrag && s.caret() > caretBeforeDrag && !s.caretDragging(), "Space drag moves across columns and lines without inserting text");
+await tap(183, 219);
+await frames(23, 0, [181, 121]); await frames(1, 0, [205, 121]); await frames(1);
+check(s.selecting() && s.selection()[1] > s.selection()[0], "Select and held-space drag create a source selection");
+await frames(1, BTN.ZL); await shot("selection"); await frames(1); await shot("selection-open");
 const selection = s.draft()!.text.slice(...s.selection());
 await press(BTN.ZL | BTN.CROSS); // copy; no backspace leak
 const copiedSource = s.draft()!.text;
@@ -106,7 +115,22 @@ check(copiedSource.includes(selection), "ZL+B copies without invoking the plain 
 s.toggleSelect(); s.moveCaret(s.draft()!.text.length);
 await press(BTN.ZL | BTN.TRIANGLE);
 check(s.draft()!.text.endsWith(selection), "ZL+X pastes the selected text locally");
-await shot("edit");
+s.moveCaret(-s.caret());
+await frames(1); check(s.caretVisible(), "Caret is visible immediately after movement");
+await shot("caret-visible"); await frames(30); check(!s.caretVisible(), "Caret hides after its half-second visible phase");
+await shot("caret-hidden");
+s.moveCaret(1); check(s.caretVisible(), "Moving the caret restarts its visible phase immediately");
+await tap(45, 174); check(s.focus() === "library" && !s.caretVisible(), "Bottom pane focus hides the inactive source caret");
+await tap(245, 174); check(s.focus() === "document" && s.caretVisible(), "Touching the source pad restores document focus and caret");
+const editorCaret = s.caret();
+await frames(1, 0, [230, 193]); await frames(1, 0, [230, 177]); await frames(1);
+check(s.editorScroll.offset() > 0 && s.caret() === editorCaret, "Editor pad scrolls the excerpt without moving its caret");
+s.editorScroll.stop(); s.moveCaret(-s.caret()); await frames(1); await shot("edit");
+const beforeRead = s.draft()!.text;
+await tap(40, 13);
+check(s.mode() === "read" && s.draft()!.text === beforeRead && s.dirty(), "Visible Read button exits editing and retains the local draft");
+await shot("retained-draft"); await tap(268, 219);
+check(s.mode() === "edit" && s.draft()!.text === beforeRead, "Resume touch button returns to the retained draft");
 const retained = s.draft()!.text; connected = -2; await frames(20);
 check(s.dirty() && s.draft()?.text === retained, "Disconnect preserves the unsaved draft");
 await press(BTN.LTRIGGER | BTN.SELECT);

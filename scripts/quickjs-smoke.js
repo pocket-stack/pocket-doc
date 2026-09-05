@@ -7,7 +7,7 @@ const mask = "A".repeat(1366) + "==";
 const document = {id:1, title:"Stack smoke", revision:"revision-1", layout:"layout-1", rows:1000,
   chars:10000, mini:[10,20], outline:[], links:[]};
 globalThis.ui = {__host:"3ds-dev", __hostAbi:8, __viewport:{w:400,h:240},
-  __auxiliarySurface:{root:2,w:320,h:240}, __textures:{"folio-book.svg":0}, __sprites:{},
+  __auxiliarySurface:{root:2,w:320,h:240}, __textures:{"shift.svg":0,"folio-book.svg":1}, __sprites:{},
   createNode:() => node++, measureText:text => text.length * 7};
 for (const name of ["destroyNode","insertBefore","removeChild","setStyle","setProp","setPropBatch",
   "setText","replaceText","uploadTexture","setImage","setSprite","animate","cancelAnim","setFocus",
@@ -35,15 +35,15 @@ globalThis.offload = {
   },
 };
 globalThis.__simHz = 60;
-function frames(n, buttons=0) {
-  for (let i=0;i<n;i++) { frame(buttons,0x8080,[],[],[]); ticks++; }
+function frames(n, buttons=0, analog=0x8080) {
+  for (let i=0;i<n;i++) { frame(buttons,analog,[],[],[]); ticks++; }
 }
 function check(condition, message) { if (!condition) throw new Error(message); }
 try {
   std.loadScript(scriptArgs[1] || "runtime/dist/3ds/guest/pocketfolio-main.js");
   const s = globalThis.__folio;
   frames(60); check(s.mode()==="read", "offline mount failed");
-  session=1; frames(220);
+  session=1; frames(100); s.setFocus("document"); frames(60,0,0x80ff); frames(60,0,0x8000);
   check(s.total()===1000 && s.tiles.size>=24, "resource reveal failed");
   failures=true; s.jump(0.5,"document"); frames(100);
   const row = Math.floor(s.scroll.offset()/20);
@@ -57,5 +57,5 @@ try {
   const draft=s.draft().text; session=-1; frames(20);
   check(s.draft().text===draft, "offline draft lost");
   std.puts(JSON.stringify({ok:true,frames:ticks,nativeNodeIds:node,uploadedTextures:texture,
-    checks:["offline mount","table reveal","error fallback","retry","editor","Unicode resource","offline draft"]})+"\n");
+    checks:["offline mount","continuous stick scrolling","table reveal","error fallback","retry","editor","Unicode resource","offline draft"]})+"\n");
 } catch (error) { std.puts(String(error)+"\n"+error.stack+"\n"); std.exit(1); }

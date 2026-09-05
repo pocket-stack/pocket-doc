@@ -1,4 +1,5 @@
-import { createMemo, createSignal, onCleanup } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
+import { createCaretBlink } from "@pocketjs/framework/animation";
 import { offload } from "@pocketjs/framework/offload";
 import { createResourceSlot, pending, ready, type ResourceState } from "@pocketjs/framework/resource-state";
 import { onFrame } from "@pocketjs/framework/lifecycle";
@@ -6,7 +7,8 @@ import { BTN } from "@pocketjs/framework/input";
 import { createScroller, bindDpadScroll } from "@pocketjs/framework/kinetics";
 import { getOps } from "@pocketjs/framework/host";
 import { uploadLine } from "./tiles.ts";
-import { sourceRows, sourceWindow } from "./editor.ts";
+import { moveSourceCaret, sourceLayout, sourceWindow } from "./editor.ts";
+import { createRowChanges } from "./window.ts";
 import { chordAction, heldBank, moveListSelection, type Action, type Bank } from "./commands.ts";
 import { FILE_H, LINE_H, SOURCE_COLUMNS, VIEW_H } from "../shared/layout.ts";
 export type FileRow = { id: number; title: string; bytes: number };
@@ -23,7 +25,6 @@ export function createFolio() {
   const [status, setStatus] = createSignal("Waiting for Mac...");
   const [online, setOnline] = createSignal(false);
   const [total, setTotal] = createSignal(0);
-  const [version, setVersion] = createSignal(0);
   const [doc, setDoc] = createSignal<Document>();
   const [draft, setDraft] = createSignal<Draft>();
   const [caret, setCaret] = createSignal(0);
@@ -36,21 +37,53 @@ export function createFolio() {
   const [selecting, setSelecting] = createSignal(false);
   const [anchor, setAnchor] = createSignal(0);
   const [confirmDiscard, setConfirmDiscard] = createSignal(false);
+  const [caretVisible, setCaretVisible] = createSignal(false);
+  const [caretDragging, setCaretDragging] = createSignal(false);
+  const [textVersion, setTextVersion] = createSignal(0);
+  const fileChanges = createRowChanges(), rowChanges = createRowChanges();
   const tiles = new Map<number, Tile>();
   const tileResources = new Map<number, ReturnType<typeof createResourceSlot<Tile>>>();
   const rowSpecs = new Map<number, RowSpec>();
   const files = new Map<number, FileRow>();
   const textTiles = new Map<string, number>();
-  const editorRows = createMemo(() => sourceRows(draft()?.text ?? "", caret(), SOURCE_COLUMNS));
+  const source = createMemo(() => sourceLayout(draft()?.text ?? "", SOURCE_COLUMNS));
+  const editorScroll = createScroller({ max: () => Math.max(0, source().length * 18 - 162), extent: () => 162 });
+  const editorFirst = createMemo(() => Math.max(0, Math.floor(editorScroll.offset() / 18)));
+  const editorRows = createMemo(() => source().slice(editorFirst(), editorFirst() + 10));
+  const caretRow = createMemo(() => Math.max(0, source().findIndex(r => caret() >= r.start && caret() <= r.end)));
+  const blink = createCaretBlink({ onChange: setCaretVisible });
+  createEffect(() => blink.setActive(mode() === "edit" && focus() === "document"));
+  createEffect(() => blink.setHeld(caretDragging()));
+  createEffect(() => {
+    caret(); draft(); blink.reset();
+    untrack(() => {
+      const top = caretRow() * 18, offset = editorScroll.offset();
+      if (top < offset) editorScroll.scrollTo(top, { immediate: true });
+      else if (top + 18 > offset + 162) editorScroll.scrollTo(top + 18 - 162, { immediate: true });
+    });
+  });
+  onCleanup(blink.dispose);
   const sourceLines = createMemo(() => sourceWindow(draft()?.text ?? "", caret(), SOURCE_COLUMNS));
   const selection = createMemo(() => selecting() ? [Math.min(anchor(), caret()), Math.max(anchor(), caret())] as const : [caret(), caret()] as const);
   const inflight = new Map<string, number>();
-  let generation = 0, previous = 0, ticks = 0, lastSession = 0, retryAt = 0, op = "", clipboard = "", navHeld = 0;
+  let generation = 0, previous = 0, ticks = 0, lastSession = 0, retryAt = 0, op = "", clipboard = "", navHeld = 0, lastDirection = 1;
   const scroll = createScroller({ max: () => Math.max(0, (doc()?.rows ?? 0) * LINE_H - VIEW_H), extent: () => VIEW_H });
   const libraryScroll = createScroller({ max: () => Math.max(0, total() * FILE_H - VIEW_H), extent: () => VIEW_H });
+  const firstRow = createMemo(() => Math.max(0, Math.floor(scroll.offset() / LINE_H)));
+  const firstFile = createMemo(() => Math.max(0, Math.floor(libraryScroll.offset() / FILE_H)));
+  const visibleText = createMemo(() => {
+    const lines: string[] = [];
+    for (let n = 0; n < 9; n++) {
+      const index = firstFile() + n; fileChanges.read(index);
+      const title = files.get(index)?.title.slice(0, 17) ?? "";
+      if (/[^\x00-\x7f]/.test(title)) lines.push(title);
+    }
+    if (mode() === "edit") for (const row of editorRows()) if (/[^\x00-\x7f]/.test(row.text)) lines.push(row.text);
+    return lines;
+  });
   const activeScroll = () => focus() === "library" ? libraryScroll : scroll;
-  bindDpadScroll(scroll, { active: () => focus() === "document" && mode() === "read", stepPx: 7, nubPx: 12 });
-  const bump = () => setVersion(v => v + 1);
+  bindDpadScroll(scroll, { active: () => !menu() && focus() === "document" && mode() === "read", stepPx: 7, nubPx: 12 });
+  bindDpadScroll(libraryScroll, { active: () => !menu() && focus() === "library", stepPx: 0, nubPx: 12 });
   const clearPending = () => { generation++; for (const id of inflight.values()) io.cancel(id); inflight.clear(); };
   const cancelSpatial = (pane?: "library" | "document") => {
     for (const [key, id] of inflight) {
@@ -71,7 +104,7 @@ export function createFolio() {
         if (inflight.get(key) === id) inflight.delete(key);
         if (gen !== generation) return;
         if (!result.ok) { setStatus(result.error); retryAt = ticks + 90; setSaving(false); fail?.(result.error); return; }
-        try { receive(JSON.parse(result.value)); }
+        try { batch(() => receive(JSON.parse(result.value))); }
         catch (error) { const message = error instanceof Error ? error.message : "Invalid provider response"; setStatus(message); fail?.(message); }
       });
     } catch (error) { setStatus(error instanceof Error ? error.message : "Request exceeds budget"); return false; }
@@ -81,13 +114,13 @@ export function createFolio() {
   const clearTiles = () => {
     for (const tile of tiles.values()) getOps().freeTexture?.(tile.handle);
     for (const resource of tileResources.values()) resource.dispose();
-    tiles.clear(); tileResources.clear(); rowSpecs.clear(); bump();
+    tiles.clear(); tileResources.clear(); rowSpecs.clear(); rowChanges.clear();
   };
   const list = (offset = 0) => request(`list:${offset}`, "library.list", { offset, query: query() }, p => {
     setTotal(p.total);
-    for (let i = 0; i < p.rows.length; i++) files.set(offset + i, p.rows[i]);
-    while (files.size > 96) files.delete(files.keys().next().value!);
-    bump();
+    for (let i = 0; i < p.rows.length; i++) { files.set(offset + i, p.rows[i]); fileChanges.notify(offset + i); }
+    while (files.size > 96) { const old = files.keys().next().value!; files.delete(old); fileChanges.notify(old); }
+
     if (!doc() && p.rows[0] && mode() !== "search") open(p.rows[0].id, false, false);
   });
   const open = (id: number, preserve = false, focusAfter = true) => {
@@ -106,7 +139,7 @@ export function createFolio() {
     if (draft()) { setMode("edit"); if (select) { setAnchor(caret()); setSelecting(true); } return; }
     request("edit", "document.edit", { id: d.id, revision: d.revision, row: Math.max(0, Math.floor(scroll.offset() / LINE_H)) }, p => {
       setDraft(p); setCaret(0); setAnchor(0); setSelecting(select); setMode("edit"); setDirty(false); op = "";
-      setStatus(select ? "Slide on the right pad to select text" : "Editing source excerpt");
+      setStatus(select ? "Hold space, then drag to select" : "Editing source excerpt");
     });
   };
   const insert = (add: string) => {
@@ -135,6 +168,11 @@ export function createFolio() {
     let next = Math.max(0, Math.min(draft()?.text.length ?? 0, caret() + n));
     if (/[\uDC00-\uDFFF]/.test(draft()?.text[next] ?? "")) next += n < 0 ? -1 : 1;
     setCaret(next); if (!selecting()) setAnchor(next);
+    blink.reset();
+  };
+  const dragCaret = (dx: number, dy: number) => {
+    const next = moveSourceCaret(draft()?.text ?? "", caret(), dx, dy, SOURCE_COLUMNS);
+    moveCaret(next - caret());
   };
   const save = () => {
     const d = doc(), e = draft(); if (!d || !e || saving()) return;
@@ -147,8 +185,8 @@ export function createFolio() {
     else setStatus("Draft retained; reconnect to save");
   };
   const search = () => {
-    clearPending(); files.clear(); setTotal(0); setMode("read"); setFocus("library");
-    libraryScroll.scrollTo(0, { immediate: true }); setSelected(0); retryAt = 0; bump(); list();
+    clearPending(); files.clear(); fileChanges.clear(); setTotal(0); setMode("read"); setFocus("library");
+    libraryScroll.scrollTo(0, { immediate: true }); setSelected(0); retryAt = 0; list();
   };
   const ensureSelected = () => setSelected(moveListSelection(selected(), 0, libraryScroll.offset(), VIEW_H, total(), FILE_H));
   const activate = () => {
@@ -179,7 +217,7 @@ export function createFolio() {
       case "focus-list": setFocus("library"); break;
       case "focus-document": setFocus("document"); break;
       case "search": setMode("search"); setFocus("library"); break;
-      case "refresh": clearPending(); files.clear(); retryAt = 0; bump(); break;
+      case "refresh": clearPending(); files.clear(); fileChanges.clear(); retryAt = 0; break;
       case "edit": edit(); break;
       case "read": setMode("read"); setStatus(dirty() ? "Draft retained; R+A resumes" : "L: Library   R: Document"); break;
       case "save": save(); break;
@@ -231,7 +269,7 @@ export function createFolio() {
     if (!bank) {
       if (mode() === "edit" && focus() === "document") {
         if (pressed & BTN.LEFT) moveCaret(-1); if (pressed & BTN.RIGHT) moveCaret(1);
-        if (nav & BTN.UP) moveCaret(-SOURCE_COLUMNS); if (nav & BTN.DOWN) moveCaret(SOURCE_COLUMNS);
+        if (nav & BTN.UP) dragCaret(0, -1); if (nav & BTN.DOWN) dragCaret(0, 1);
         if (pressed & BTN.CIRCLE) key("ENTER"); if (pressed & BTN.CROSS) key("DEL");
         if (pressed & BTN.START) save();
         if (pressed & BTN.TRIANGLE) perform("read");
@@ -241,22 +279,21 @@ export function createFolio() {
         if (pressed & BTN.SELECT) perform("search");
       }
     }
-    scroll.step(); libraryScroll.step();
+    const oldOffset = scroll.offset();
+    scroll.step(); libraryScroll.step(); editorScroll.step();
+    const motion = scroll.offset() - oldOffset;
+    if (motion) lastDirection = motion > 0 ? 1 : -1;
     if (!online()) { if (!saving()) setStatus(dirty() ? "Offline - draft retained" : "Waiting for paired Mac..."); return; }
     const firstFile = Math.max(0, Math.floor(libraryScroll.offset() / FILE_H)), page = Math.floor(firstFile / 12) * 12;
     if (!files.has(firstFile)) list(page);
     if (total() > page + 12 && !files.has(page + 12)) list(page + 12);
-    const visibleText = [
-      ...Array.from({ length: 9 }, (_, n) => files.get(firstFile + n)?.title.slice(0, 17) ?? ""),
-      ...(mode() === "edit" ? editorRows().map(row => row.text) : []),
-    ];
-    for (const line of visibleText) {
-      if (!/[^\x00-\x7f]/.test(line) || textTiles.has(line) || inflight.size >= 4) continue;
+    for (const line of visibleText()) {
+      if (textTiles.has(line) || inflight.size >= 4) continue;
       if (request(`text:${line}`, "text.tile", { text: line }, p => {
         const handle = uploadLine(p.mask, 3); if (handle < 0) return;
         textTiles.set(line, handle);
         while (textTiles.size > 20) { const key = textTiles.keys().next().value!; getOps().freeTexture?.(textTiles.get(key)!); textTiles.delete(key); }
-        bump();
+        setTextVersion(v => v + 1);
       })) break;
     }
     const d = doc(); if (!d || mode() === "edit") return;
@@ -265,16 +302,16 @@ export function createFolio() {
     for (const from of [metadata, metadata + 12]) {
       if (from >= d.rows || rowSpecs.has(from)) continue;
       request(`window:${from}`, "document.window", { id: d.id, revision: d.revision, layout: d.layout, first: from }, specs => {
-        for (const spec of specs) rowSpecs.set(spec.row, spec);
-        while (rowSpecs.size > 96) rowSpecs.delete(rowSpecs.keys().next().value!);
-        bump();
+        for (const spec of specs) { rowSpecs.set(spec.row, spec); rowChanges.notify(spec.row); }
+        while (rowSpecs.size > 96) { const old = rowSpecs.keys().next().value!; rowSpecs.delete(old); rowChanges.notify(old); }
+
       });
     }
     let issued = 0;
     for (let n = 0; n < 60 && inflight.size < 4 && issued < 2; n++) {
-      const row = n < 12 ? first + n : scroll.velocity() >= 0 ? (n < 44 ? first + n : first - (n - 43)) : (n < 44 ? first - (n - 11) : first + n - 32);
+      const row = n < 12 ? first + n : lastDirection >= 0 ? (n < 44 ? first + n : first - (n - 43)) : (n < 44 ? first - (n - 11) : first + n - 32);
       if (row < 0 || row >= d.rows || tiles.has(row) || inflight.has(`tile:${row}`)) continue;
-      const resource = tileResources.get(row) ?? createResourceSlot<Tile>(bump);
+      const resource = tileResources.get(row) ?? createResourceSlot<Tile>(() => rowChanges.notify(row));
       let ticket = 0;
       if (request(`tile:${row}`, "document.tile", { id: d.id, revision: d.revision, layout: d.layout, row }, p => {
         const handle = uploadLine(p.mask, p.kind);
@@ -282,7 +319,7 @@ export function createFolio() {
         const tile = { handle, kind: p.kind, start: p.start };
         if (!resource.resolve(ticket, tile)) { getOps().freeTexture?.(handle); return; }
         tiles.set(row, tile);
-        bump();
+
       }, error => resource.reject(ticket, error))) {
         tileResources.set(row, resource); ticket = resource.begin(); issued++;
         while (tileResources.size > 72) {
@@ -292,18 +329,21 @@ export function createFolio() {
           if (victim < 0) break;
           const old = tiles.get(victim); if (old) getOps().freeTexture?.(old.handle);
           tiles.delete(victim); tileResources.get(victim)?.dispose(); tileResources.delete(victim);
+          rowChanges.notify(victim);
         }
-        bump();
+
       }
     }
   });
   onCleanup(() => { clearPending(); clearTiles(); for (const handle of textTiles.values()) getOps().freeTexture?.(handle); });
   return {
-    mode, setMode, focus, setFocus, menu, status, online, total, version, doc, draft, caret, query, shift, symbols, selected, setSelected,
+    mode, setMode, focus, setFocus, menu, status, online, total, textVersion, doc, draft, caret, query, shift, symbols, selected, setSelected,
+    firstRow, firstFile, source, editorFirst, editorScroll, caretRow, caretVisible, caretDragging, setCaretDragging, dragCaret,
     tiles, rowSpecs, files, textTiles, editorRows, sourceLines, scroll, libraryScroll, activeScroll, dirty, saving, selecting, selection, confirmDiscard,
     key, moveCaret, save, search, activate, edit, jump, open, nextHeading, followLink, toggleSelect, perform,
-    rowResource: (row: number): ResourceState<Tile> => { version(); return tileResources.get(row)?.state() ?? pending(); },
-    fileResource: (index: number): ResourceState<FileRow> => { version(); const file = files.get(index); return file ? ready(file) : pending(); },
+    rowSpec: (row: number) => { rowChanges.read(row); return rowSpecs.get(row); },
+    rowResource: (row: number): ResourceState<Tile> => { rowChanges.read(row); return tileResources.get(row)?.state() ?? pending(); },
+    fileResource: (index: number): ResourceState<FileRow> => { fileChanges.read(index); const file = files.get(index); return file ? ready(file) : pending(); },
     diagnostics: () => ({ cachedTiles: tiles.size, resourceSlots: tileResources.size, pending: inflight.size, offset: scroll.offset(), frame: ticks }),
   };
 }

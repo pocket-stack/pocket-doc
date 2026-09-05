@@ -38,11 +38,11 @@ generated documents, SQLite, build products and logs are ignored by Git.
 | State | Controls |
 | --- | --- |
 | Both panes | Left/right chooses focus; up/down navigates the focused pane |
-| Library | Left touchpad scrolls/flings; its inset minimap jumps; A opens; SELECT searches |
-| Reader | Right touchpad scrolls/flings; its inset minimap jumps; d-pad/circle pad scrolls |
-| Editor | Keyboard and both pads remain visible; right pad/arrows move caret; A newline; B delete |
-| Editor | SELECT inside the right pad arms drag-selection; EDIT/READ enters or leaves source editing |
-| Editor | START or keyboard DONE saves; X returns to reading while retaining the draft |
+| Library | Left touchpad/circle pad scrolls; tapping focuses Files; A opens; SELECT searches |
+| Reader | Right touchpad scrolls/flings; tapping focuses Document; d-pad/circle pad scrolls |
+| Editor | Hold SPACE for 350 ms, then drag to move caret; short tap inserts space; arrows also move caret |
+| Editor | Right pad scrolls source; SELECT arms selection with held-space dragging; COPY copies it |
+| Editor | Top < READ returns to reading and retains the draft; SAVE / START saves; RESUME reopens it |
 | Host | L+R+START returns to Homebrew Launcher |
 
 Holding a shoulder opens its menu on the corresponding side of the upper
@@ -58,14 +58,15 @@ to switch pane focus; plain left/right moves the caret.
 | ZR | Focus document | Document start | Next heading | Document end |
 
 On a model without ZL/ZR, use **L+SELECT / R+SELECT** for those banks. After
-touch scrolling or a minimap jump leaves the selected file offscreen, the next
+touch or circle-pad scrolling leaves the selected file offscreen, the next
 up/down press selects the first visible file. Further presses move normally.
 
 The 3DS panel supports one contact. All controls work with one stylus contact;
 typing and relative caret movement share the same screen without hiding the
-keyboard. Each touchpad has a minimap on its left edge. The upper screen uses
+keyboard. The active pad has a blue header, and the bottom navigation bar names the focused pane.
+Editing shows persistent READ, EDITING and SAVE controls. The upper screen uses
 an iOS 6 light palette, with a persistent 128-pixel file pane and 256-pixel
-document pane. Body text remains 13px, headings 14px, source 12px and document
+document pane. File labels are 12px. Body text remains 13px, headings 14px, source 12px and document
 line spacing 20px. The book logo is a packed image, independent of font glyphs.
 
 ## Ownership and bounds
@@ -79,7 +80,10 @@ text rows with its font fallback. A row is a **1,024-byte 2-bit alpha mask**,
 encoded inside a bounded offload reply. The 3DS uploads it through the framework's
 native coverage decoder and retains at most **72 document resources/textures**
 plus **20 small text textures** and 96 file/row metadata entries per cache.
-There are twelve mounted rows per pane. Scrolling uses
+There are twelve mounted rows per pane. Each physical slot follows its row until
+it leaves the viewport; crossing one row reassigns one slot. Per-slot notifications
+keep arriving resources from invalidating the whole view. Row movement uses
+paint transforms. Scrolling uses
 PocketJS `createScroller`, the same kinetic state machine as the Contacts demo.
 
 Cache misses use PocketJS `ResourceBoundary` / `ResourceImage` with
@@ -91,7 +95,7 @@ The resource model supports already-uploaded images as well as text coverage;
 this app does not yet fetch Markdown image attachments.
 
 At most **four app requests** are outstanding. User commands can displace
-speculative reads; minimap jumps cancel local interest in reads for the old
+speculative reads; document start/end jumps cancel local interest in reads for the old
 region. Already executing host work may finish, but stale replies do not update
 the new view. The cache prefetches ahead of motion and discards distant rows.
 Network delay can leave visible skeletons while momentum continues.
@@ -113,6 +117,11 @@ Keystrokes update the draft and caret locally. ASCII source lines also render
 locally; changed lines containing non-ASCII text require a new Mac-rendered
 texture, so their visual echo still depends on the network. The current editor
 pauses text input while a save is pending.
+
+The editor uses framework `createCaretBlink` from `@pocketjs/framework/animation`:
+focus, typing and movement restart its visible phase, a held-space drag keeps it
+visible, and losing focus hides it. One cancellable virtual-clock deadline
+controls blinking; it adds no network dependency or per-frame UI writes.
 
 ## Saving and disconnection
 
@@ -142,6 +151,7 @@ bun runtime/node_modules/typescript/bin/tsc --noEmit
 bun run 3ds --pocket-only
 bun runtime/tools/wasm.ts
 bun scripts/sim.ts
+bun scripts/scroll-replay.ts
 # Install the QuickJS CLI once with: brew install quickjs
 qjs --std --stack-size 131072 scripts/quickjs-smoke.js
 ```
