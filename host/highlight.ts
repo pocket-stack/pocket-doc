@@ -9,16 +9,17 @@ export function highlight(code: string, language: string) {
 }
 
 /** One palette index per pixel column; foreground cells cannot overlap. */
-export function columnColors(chars: readonly { char: string; color: string }[], width: number) {
+export function columnColors(chars: readonly { char: string; color: string }[], width: number, offset = 0) {
   const palette = ["24292e"], columns = Array<string>(width).fill("0");
-  let x = 2;
+  let x = 2 - offset;
   for (const { char, color } of chars) {
     const rgb = color.replace(/^#/, "").slice(0, 6).toLowerCase();
     let ink = palette.indexOf(rgb);
     if (ink < 0 && /^[0-9a-f]{6}$/.test(rgb) && palette.length < 16) { ink = palette.length; palette.push(rgb); }
     if (ink < 0) ink = 0;
     const advance = char.codePointAt(0)! > 255 ? 14 : 7;
-    columns.fill(ink.toString(16), x, Math.min(width, x + advance)); x += advance;
+    if (x + advance > 0) columns.fill(ink.toString(16), Math.max(0, x), Math.min(width, x + advance)); x += advance;
+    if (x >= width) break;
   }
   return { columns: columns.join(""), palette: palette.join("") };
 }

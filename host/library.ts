@@ -1,8 +1,9 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { openSync, closeSync, readFileSync, writeFileSync, readdirSync, realpathSync, statSync, lstatSync, mkdirSync, renameSync, fsyncSync, constants } from "node:fs";
+import { openSync, closeSync, readFileSync, writeFileSync, readdirSync, realpathSync, statSync, fstatSync, lstatSync, mkdirSync, renameSync, fsyncSync, linkSync, unlinkSync, existsSync, constants } from "node:fs";
 import { resolve, join, dirname } from "node:path";
-import { layout, raster, rasterSource, LAYOUT_REVISION } from "./layout.ts";
+import { layout, raster, rasterSource, codeColors, LAYOUT_REVISION } from "./layout.ts";
+import { Drafts } from "./drafts.ts";
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 const integer = (n: unknown, max: number) => {
   if (!Number.isSafeInteger(n) || (n as number) < 0 || (n as number) > max) throw new Error("Invalid position");
@@ -11,6 +12,7 @@ const integer = (n: unknown, max: number) => {
 export class Library {
   readonly root: string;
   readonly db: Database;
+  readonly drafts: Drafts;
   private cache = new Map<number, { source: string; revision: string; rows: ReturnType<typeof layout>["rows"]; outline: ReturnType<typeof layout>["outline"] }>();
   constructor(root: string) {
     this.root = realpathSync(root);
@@ -21,9 +23,11 @@ export class Library {
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=2000;
       CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY, name TEXT UNIQUE, title TEXT, bytes INTEGER, modified REAL);
       CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(title, body);
-      CREATE TABLE IF NOT EXISTS saves(op TEXT PRIMARY KEY, id INTEGER, old TEXT, revision TEXT, stage TEXT, state TEXT, fingerprint TEXT);`);
+      CREATE TABLE IF NOT EXISTS saves(op TEXT PRIMARY KEY, id INTEGER, old TEXT, revision TEXT, stage TEXT, state TEXT, fingerprint TEXT);
+      CREATE TABLE IF NOT EXISTS creates(op TEXT PRIMARY KEY,name TEXT,stage TEXT,state TEXT);`);
     if (!(this.db.query("PRAGMA table_info(saves)").all() as {name: string}[]).some(c => c.name === "fingerprint")) this.db.exec("ALTER TABLE saves ADD COLUMN fingerprint TEXT");
-    this.recover();
+    this.recover(); this.recoverCreates();
+    this.drafts = new Drafts(this.db);
   }
   index() {
     const put = this.db.query("INSERT INTO files(name,title,bytes,modified) VALUES (?,?,?,?) ON CONFLICT(name) DO UPDATE SET title=excluded.title,bytes=excluded.bytes,modified=excluded.modified RETURNING id");
@@ -83,12 +87,13 @@ export class Library {
     const row = this.db.query("SELECT title FROM files WHERE id=?").get(id) as { title: string };
     return { id, title: row.title, layout: LAYOUT_REVISION, revision: d.revision, rows: d.rows.length, chars: d.source.length, outline: Array.from({ length: Math.min(12, d.outline.length) }, (_, i) => d.outline[Math.floor(i * d.outline.length / Math.min(12, d.outline.length))]), mini: Array.from({ length: 26 }, (_, i) => { const row = d.rows[Math.floor(i * d.rows.length / 26)]; return Math.min(54, Math.max(2, row.text.length)); }), links: [...d.source.matchAll(/\[\[([^\]]+)\]\]/g)].slice(0, 8).map(m => m[1].slice(0, 70)) };
   }
-  tile(id: number, revision: string, row: number) {
+  tile(id: number, revision: string, row: number, x = 0) {
     const d = this.document(id);
     if (d.revision !== revision) throw new Error("Revision changed; reopen document");
     integer(row, d.rows.length - 1);
-    const r = d.rows[row];
-    return { row, kind: r.kind, start: r.start, mask: raster(r), ...(r.colors ? { colors: r.colors } : {}) };
+    const r = d.rows[row]; integer(x, Math.max(0, (r.code?.width ?? 256) - 256));
+    const colors = codeColors(r, x);
+    return { row, x, kind: r.kind, start: r.start, mask: raster(r, x), ...(colors ? { colors } : {}) };
   }
   window(id: number, revision: string, first: number) {
     const d = this.document(id);
@@ -96,7 +101,8 @@ export class Library {
     integer(first, d.rows.length - 1);
     return d.rows.slice(first, first + 12).map((row, index) => ({
       row: first + index, kind: row.kind,
-      ...(row.table ? { columns: row.table.widths, header: row.table.header } : {}),
+      ...(row.code ? { code: { block: row.code.block, width: row.code.width } } : {}),
+      ...(row.table ? { columns: row.table.widths, header: row.table.header, first: row.table.first, last: row.table.last } : {}),
     }));
   }
   edit(id: number, revision: string, row: number) {
@@ -111,29 +117,99 @@ export class Library {
   save(p: { id: number; revision: string; op: string; start: number; end: number; text: string }) {
     if (!/^[a-zA-Z0-9-]{8,80}$/.test(p.op) || typeof p.text !== "string" || p.text.length > 768) throw new Error("Invalid edit");
     const fingerprint = hash(JSON.stringify([p.id, p.revision, p.start, p.end, p.text]));
-    const existing = this.db.query("SELECT * FROM saves WHERE op=?").get(p.op) as any;
-    if (existing) {
-      if (existing.id !== p.id || existing.old !== p.revision || existing.fingerprint !== fingerprint) throw new Error("Operation identity conflict");
-      this.recover();
-      const saved = this.db.query("SELECT state,revision FROM saves WHERE op=?").get(p.op) as any;
-      if (saved.state !== "saved") throw new Error("Save conflict; draft retained");
-      return { revision: saved.revision, saved: true };
-    }
+    const known = this.saved(p.id, p.revision, p.op, fingerprint); if (known) return known;
     const source = this.read(p.id);
     if (hash(source) !== p.revision) throw new Error("Conflict: file changed on Mac; draft retained");
     integer(p.start, source.length); integer(p.end, source.length);
     if (p.end < p.start || p.end - p.start > 384) throw new Error("Invalid edit range");
-    const next = source.slice(0, p.start) + p.text + source.slice(p.end), revision = hash(next);
-    const stage = join(this.root, `.doc/${p.op}.pending`);
+    return this.commitSource(p.id, p.revision, p.op, source.slice(0, p.start) + p.text + source.slice(p.end), fingerprint);
+  }
+  private saved(id: number, revision: string, op: string, fingerprint: string) {
+    const existing = this.db.query("SELECT * FROM saves WHERE op=?").get(op) as any;
+    if (existing) {
+      if (existing.id !== id || existing.old !== revision || existing.fingerprint !== fingerprint) throw new Error("Operation identity conflict");
+      this.recover();
+      const saved = this.db.query("SELECT state,revision FROM saves WHERE op=?").get(op) as any;
+      if (saved.state !== "saved") throw new Error("Save conflict; draft retained");
+      return { revision: saved.revision, saved: true };
+    }
+  }
+  private commitSource(id: number, old: string, op: string, next: string, fingerprint: string) {
+    if (!/^[a-zA-Z0-9-]{8,80}$/.test(op) || Buffer.byteLength(next) > 4 * 1024 * 1024) throw new Error("Invalid save");
+    if (hash(this.read(id)) !== old) throw new Error("Conflict: file changed on Mac; draft retained");
+    const revision = hash(next), stage = join(this.root, `.doc/${op}.pending`);
     const fd = openSync(stage, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
     try { writeFileSync(fd, next); fsyncSync(fd); } finally { closeSync(fd); }
     const directory = openSync(join(this.root, ".doc"), "r"); try { fsyncSync(directory); } finally { closeSync(directory); }
-    this.db.query("INSERT INTO saves VALUES(?,?,?,?,?,?,?)").run(p.op, p.id, p.revision, revision, stage, "prepared", fingerprint);
+    this.db.query("INSERT INTO saves VALUES(?,?,?,?,?,?,?)").run(op, id, old, revision, stage, "prepared", fingerprint);
     this.recover();
-    const state = this.db.query("SELECT state FROM saves WHERE op=?").get(p.op) as { state: string };
+    const state = this.db.query("SELECT state FROM saves WHERE op=?").get(op) as { state: string };
     if (state.state !== "saved") throw new Error("Conflict: file changed on Mac; draft retained");
-    this.cache.delete(p.id); this.index();
+    this.cache.delete(id); this.index();
     return { revision, saved: true };
+  }
+  beginDraft(p: { id: number; revision: string; row: number; token: string }) {
+    const d = this.document(p.id, true);
+    if (d.revision !== p.revision) throw new Error("Revision changed; reopen document");
+    integer(p.row, d.rows.length - 1);
+    return this.drafts.begin(p.token, p.id, p.revision, d.source, d.rows[p.row].start);
+  }
+  saveDraft(p: { id: number; revision: string; token: string; seq: number; op: string }) {
+    const fingerprint = hash(JSON.stringify([p.id, p.revision, p.token, p.seq]));
+    const known = this.saved(p.id, p.revision, p.op, fingerprint);
+    if (known) { this.drafts.discard(p.token); return known; }
+    const draft = this.drafts.content(p.token, p.seq);
+    if (draft.id !== p.id || draft.revision !== p.revision) throw new Error("Draft identity conflict");
+    const result = this.commitSource(p.id, p.revision, p.op, draft.source, fingerprint);
+    this.drafts.discard(p.token); return result;
+  }
+  create(p: { name: string; op: string }) {
+    if (typeof p.name !== "string" || !/^[a-zA-Z0-9-]{8,80}$/.test(p.op)) throw new Error("Invalid document name or identity");
+    const base = p.name.trim().replace(/\.md$/i, "");
+    if (!base || base.length > 80 || /^[.]/.test(base) || /[\/\\:\x00-\x1f]/.test(base)) throw new Error("Use a filename without folders or control characters");
+    const name = base + ".md", stage = join(this.root, `.doc/create-${p.op}.pending`);
+    let record = this.db.query("SELECT * FROM creates WHERE op=?").get(p.op) as { name: string; state: string } | null;
+    if (record && record.name !== name) throw new Error("Create operation identity conflict");
+    if (!record) {
+      if (existsSync(join(this.root, name))) throw new Error("A document with that filename already exists");
+      const initial = `# ${base}\n\n`;
+      let fd: number, recovered = false;
+      try { fd = openSync(stage, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        // A crash before the journal insert may leave our private staging file.
+        fd = openSync(stage, constants.O_RDWR | constants.O_NOFOLLOW);
+        if (!fstatSync(fd).isFile() || readFileSync(fd, "utf8") !== initial) { closeSync(fd); throw new Error("Create staging conflict"); }
+        recovered = true;
+      }
+      try { if (!recovered) writeFileSync(fd, initial); fsyncSync(fd); } finally { closeSync(fd); }
+      const dir = openSync(join(this.root, ".doc"), "r"); try { fsyncSync(dir); } finally { closeSync(dir); }
+      this.db.query("INSERT INTO creates VALUES(?,?,?,'prepared')").run(p.op, name, stage);
+    }
+    this.recoverCreates();
+    record = this.db.query("SELECT * FROM creates WHERE op=?").get(p.op) as { name: string; state: string };
+    if (record.state !== "created") throw new Error("Filename conflict; no document was replaced");
+    this.index();
+    const item = this.db.query("SELECT id FROM files WHERE name=?").get(name) as { id: number };
+    const position = (this.db.query("SELECT count(*) AS n FROM files WHERE id<?").get(item.id) as { n: number }).n;
+    const document = this.open(item.id);
+    return { document, position, total: this.list().total,
+      window: this.beginDraft({ id: item.id, revision: document.revision, row: 0, token: `draft-${hash(p.op).slice(0, 32)}` }) };
+  }
+  private recoverCreates() {
+    for (const row of this.db.query("SELECT * FROM creates WHERE state='prepared'").all() as { op: string; name: string; stage: string }[]) {
+      const target = join(this.root, row.name);
+      let state = "conflict";
+      try {
+        try { linkSync(row.stage, target); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
+        const a = lstatSync(row.stage), b = lstatSync(target);
+        if (a.isFile() && b.isFile() && a.ino === b.ino && a.dev === b.dev) {
+          const fd = openSync(this.root, "r"); try { fsyncSync(fd); } finally { closeSync(fd); } state = "created";
+        }
+      } catch { /* Retain staging evidence on failure. */ }
+      this.db.query("UPDATE creates SET state=? WHERE op=?").run(state, row.op);
+      if (state === "created") unlinkSync(row.stage);
+    }
   }
   private recover() {
     this.db.transaction(() => {
@@ -157,9 +233,14 @@ export class Library {
     return {
       "text.tile": wrap(p => { if (typeof p.text !== "string" || p.text.length > 100) throw new Error("Text tile budget exceeded");
         return { mask: p.cellWidth === undefined ? raster({ text: p.text, start: 0, end: p.text.length, kind: 3 }) : rasterSource(p.text, p.cellWidth) }; }),
+      "document.create": wrap(p => this.create(p)),
+      "draft.begin": wrap(p => this.beginDraft(p)),
+      "draft.seek": wrap(p => this.drafts.seek(p)),
+      "draft.save": wrap(p => this.saveDraft(p)),
+      "draft.discard": wrap(p => { this.drafts.discard(p.token); return { discarded: true }; }),
       "library.list": wrap(p => this.list(p.query, p.offset)),
       "document.open": wrap(p => this.open(p.id)),
-      "document.tile": wrap(p => { if (p.layout !== LAYOUT_REVISION) throw new Error("Layout changed; reopen the document"); return this.tile(p.id, p.revision, p.row); }),
+      "document.tile": wrap(p => { if (p.layout !== LAYOUT_REVISION) throw new Error("Layout changed; reopen the document"); return this.tile(p.id, p.revision, p.row, p.x ?? 0); }),
       "document.window": wrap(p => { if (p.layout !== LAYOUT_REVISION) throw new Error("Layout changed; reopen the document"); return this.window(p.id, p.revision, p.first); }),
       "document.heading": wrap(p => {
         const d = this.document(p.id);

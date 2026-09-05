@@ -1,32 +1,42 @@
 # Validation receipts
 
-The initial library has **1,000 Markdown files**, at least **114,722 bytes** each,
-totalling **114,872,771 bytes** before editing. The generated files are excluded
-from Git; `bun run seed` recreates the fixture without overwriting existing files.
+The current generated corpus has **1,000 Markdown files**, from **114,690** to
+**1,049,446 bytes**, totalling **157,277,771 bytes**. It is ignored by Git.
+The interaction replay copies that corpus into `dist/qa/replay-library/`; its
+create and save checks never write the paired Mac's live library.
 
-## Automated checks
+## Current automated checks
 
-- Seventeen application tests pass: SQLite paging/search, Unicode coverage, source
-  ranges, atomic saves, operation identity, restart recovery, external-edit
-  conflicts, path confinement, real TCP-to-Worker dispatch, table wrapping and
-  source offsets, shoulder command banks, viewport selection and caret boundaries.
-- TypeScript and the production guest build pass against the pinned runtime.
-- The native ARM build produces a production `.3dsx`.
-- The compiled guest Wasm simulation runs **1,423 frames and 58 behavioral checks**
-  against the full library, with replies delayed four frames. It exercises
-  actual auxiliary touch hit facts for both pads, keyboard, held-space caret movement and selection;
-  verifies shoulder menus do not jump or leak ordinary A/B actions; and checks
-  animated offline skeletons and table fallback replacement without viewport movement.
-  After disconnecting during a fling, its offset advances from 106.82 to 687.53
-  pixels. At every sampled frame, document textures and resource slots stay
-  within 72 and pending app requests within four. A locally edited draft survives
-  disconnection. This is **behavioral evidence
-  on Mac**, not a measurement of 3DS frame time.
+- **24 application tests** pass, including full-source staging, cross-window
+  undo/redo, idempotent retries, restart/save recovery, external-edit conflicts,
+  exclusive file creation and recovery of an orphaned create staging file.
+- **110 framework tests** pass for rendering, DevTools, 3DS profiles and platform
+  runtime contracts. They cover recording/replaying the optional right stick,
+  deadzones and centering when a host or older tape omits it. TypeScript and
+  generated contract checks pass.
+- TypeScript and the compiled production guest pass with runtime **6bbb4a92**.
+  **731 QuickJS frames at a 128 KiB stack** cover startup, resource errors and
+  retry, Unicode input, discard cancellation and filename-dialog creation.
+- **2,376 compiled-guest frames and 79 behavioral checks** pass with four-frame
+  provider latency. They exercise code horizontal scrolling, auxiliary hit
+  facts, compact keyboard/pads, selection, right-stick caret movement, whole
+  source navigation, typing during a delayed seek, lost-reply recovery,
+  boundary input/Backspace, save at the document end and create-to-editor.
+  Requests stay within four and document textures/resource slots within 72.
+- The ARM capture completes both upper and lower screen readbacks. The 3DS
+  QuickJS stack limit remains **192 KiB**. The production build excludes capture
+  code. Capture proves native startup; it does not prove physical interactions
+  or frame-time performance.
 
-`read.png`, `edit.png`, `table.png`, `table-loading.png` and `menu.png` are
-simulation captures of the compiled app. Run
-`bun scripts/sim.ts` after building the guest and the runtime Wasm artifact to
-refresh captures and `dist/qa/sim.json`.
+The images beside this file are compiled-app simulation captures. Run
+`bun scripts/sim.ts` to refresh them and `dist/qa/sim.json` after building the
+guest and the runtime Wasm artifact. Only the QA directory is replaced.
+
+## Current deployment
+
+The whole-document revision is built and awaiting ftpd at 172.20.12.37:5000.
+It has not yet been installed or physically accepted. The device receipts
+below describe earlier builds, including the user's accepted UX improvements.
 
 ## Physical device
 

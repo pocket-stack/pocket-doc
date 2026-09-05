@@ -2,7 +2,7 @@ import { batch, createEffect, createMemo, createSignal, onCleanup, untrack } fro
 import { createCaretBlink } from "@pocketjs/framework/animation";
 import { offload } from "@pocketjs/framework/offload";
 import { createResourceSlot, pending, ready, type ResourceState } from "@pocketjs/framework/resource-state";
-import { onFrame } from "@pocketjs/framework/lifecycle";
+import { onFrame, rightAnalogX, rightAnalogY } from "@pocketjs/framework/lifecycle";
 import { BTN } from "@pocketjs/framework/input";
 import { createScroller, bindDpadScroll } from "@pocketjs/framework/kinetics";
 import { getOps } from "@pocketjs/framework/host";
@@ -11,16 +11,17 @@ import { moveSourceCaret, sourceAdvance, sourceLayout, sourceWindow } from "./ed
 import { createEditHistory, type EditSnapshot } from "./history.ts";
 import { createRowChanges } from "./window.ts";
 import { BANKS, heldBank, moveCommand, moveListSelection, type Action, type Bank } from "./commands.ts";
+import { SOURCE_EDIT_CHARS, type SourceDraft, type DraftSeek } from "../shared/draft.ts";
 import { FILE_H, LINE_H, SOURCE_COLUMNS, SOURCE_FONT_SLOT, VIEW_H } from "../shared/layout.ts";
 export type FileRow = { id: number; title: string; bytes: number };
 type Document = { id: number; title: string; revision: string; layout: string; rows: number; chars: number; mini: number[]; outline: { row: number; title: string }[]; links: string[] };
-type Draft = { start: number; end: number; text: string; revision: string };
-export type RowSpec = { row: number; kind: number; columns?: number[]; header?: boolean };
-export type Tile = { handle: number; kind: number; start: number };
+type Draft = SourceDraft;
+export type RowSpec = { row: number; kind: number; columns?: number[]; header?: boolean; first?: boolean; last?: boolean; code?: { block: number; width: number } };
+export type Tile = { handle: number; kind: number; start: number; x: number };
 
 export function createDoc() {
   const io = offload();
-  const [mode, setMode] = createSignal<"read" | "edit" | "search">("read");
+  const [mode, setMode] = createSignal<"read" | "edit" | "search" | "create">("read");
   const [focus, setFocus] = createSignal<"library" | "document">("library");
   const [menu, setMenu] = createSignal<Bank>();
   const [commandIndex, setCommandIndex] = createSignal(0);
@@ -34,6 +35,17 @@ export function createDoc() {
   const [doc, setDoc] = createSignal<Document>();
   const [draft, setDraft] = createSignal<Draft>();
   const [caret, setCaret] = createSignal(0);
+  const [newName, setNewName] = createSignal("");
+  const [creating, setCreating] = createSignal(false);
+  const [seeking, setSeeking] = createSignal(false);
+  const [discardToken, setDiscardToken] = createSignal<string>();
+  const [codeVersion, setCodeVersion] = createSignal(0);
+  const codeOffsets = new Map<number, number>();
+  let localVersion = 0, saveWanted = false, createOp = "", stickX = 0, stickY = 0;
+  let wantWindow: { row?: number; offset?: number; history?: -1 | 1 } | undefined;
+  const deferredKeys: string[] = [];
+  let flushingKeys = false;
+  let pendingSeek: { payload: DraftSeek; version: number; sentText: string; first: number } | undefined;
   const [query, setQuery] = createSignal("");
   const [shift, setShift] = createSignal<"off" | "once" | "locked">("off");
   const [symbols, setSymbols] = createSignal(false);
@@ -54,16 +66,24 @@ export function createDoc() {
   const textTiles = new Map<string, number>();
   const sourceCellWidth = getOps().measureText("M", SOURCE_FONT_SLOT);
   const sourceWidth = (text: string) => sourceAdvance(text, sourceCellWidth);
-  const source = createMemo(() => sourceLayout(draft()?.text ?? "", SOURCE_COLUMNS));
-  const editorScroll = createScroller({ max: () => Math.max(0, source().length * 18 - 162), extent: () => 162 });
+  const rowsOf = (text: string, hasMore: boolean) => {
+    const rows = sourceLayout(text, SOURCE_COLUMNS);
+    if (hasMore && rows.at(-1)?.start === text.length) rows.pop();
+    return rows;
+  };
+  const source = createMemo(() => rowsOf(draft()?.text ?? "", (draft()?.end ?? 0) < (draft()?.chars ?? 0)));
+  const editorBase = () => draft()?.first ?? 0;
+  const editorTotal = () => (draft()?.totalRows ?? 1) + source().length - rowsOf(cleanText, (draft()?.end ?? 0) < (draft()?.chars ?? 0)).length;
+  const editorScroll = createScroller({ max: () => Math.max(0, editorTotal() * 18 - 162), extent: () => 162 });
   const editorFirst = createMemo(() => Math.max(0, Math.floor(editorScroll.offset() / 18)));
-  const editorRows = createMemo(() => source().slice(editorFirst(), editorFirst() + 10));
-  const caretRow = createMemo(() => Math.max(0, source().findIndex(r => caret() >= r.start && caret() <= r.end)));
+  const editorRows = createMemo(() => source().slice(Math.max(0, editorFirst() - editorBase()), Math.max(0, editorFirst() - editorBase() + 10)));
+  const caretRow = createMemo(() => editorBase() + Math.max(0, source().findIndex(r => caret() >= r.start && caret() <= r.end)));
+  const caretX = () => { const r = source()[caretRow() - editorBase()]; return sourceWidth((r?.text ?? "").slice(0, caret() - (r?.start ?? 0))); };
   const blink = createCaretBlink({ onChange: setCaretVisible });
-  createEffect(() => blink.setActive(mode() === "edit" && focus() === "document" && !sheetModal() && !menu()));
+  createEffect(() => blink.setActive((mode() === "create" || mode() === "edit" && focus() === "document") && !sheetModal() && !menu()));
   createEffect(() => blink.setHeld(caretDragging()));
   createEffect(() => {
-    caret(); draft(); blink.reset();
+    caret(); blink.reset();
     untrack(() => {
       const top = caretRow() * 18, offset = editorScroll.offset();
       if (top < offset) editorScroll.scrollTo(top, { immediate: true });
@@ -121,6 +141,7 @@ export function createDoc() {
     return !!id;
   };
   const clearTiles = () => {
+    codeOffsets.clear(); setCodeVersion(v => v + 1);
     for (const tile of tiles.values()) getOps().freeTexture?.(tile.handle);
     for (const resource of tileResources.values()) resource.dispose();
     tiles.clear(); tileResources.clear(); rowSpecs.clear(); rowChanges.clear();
@@ -133,7 +154,7 @@ export function createDoc() {
     if (!doc() && p.rows[0] && mode() !== "search") open(p.rows[0].id, false, false);
   });
   const open = (id: number, preserve = false, focusAfter = true) => {
-    if (dirty()) { setStatus("Save or discard the current draft first"); return; }
+    if (dirty() || pendingSeek) { setStatus("Save or discard the current draft first"); return; }
     clearPending();
     request("open", "document.open", { id }, p => {
       clearTiles(); setDoc(p); setMode("read"); setDraft(undefined); setDirty(false); setSaving(false); setSelecting(false); history.clear(); setHistorySizes(history.sizes());
@@ -142,53 +163,145 @@ export function createDoc() {
       setStatus("L: Library   R: Document");
     });
   };
-  const edit = (select = false) => {
-    const d = doc(); if (!d) return;
+  const adoptWindow = (p: Draft, absolute?: number) => {
+    cleanText = p.text; localVersion++; setDraft(p); setDirty(p.stagedDirty);
+    history.clear(); setHistorySizes(history.sizes());
+    const localRows = rowsOf(p.text, p.end < p.chars);
+    const fallback = localRows[Math.max(0, Math.min(localRows.length - 1, editorFirst() - p.first))]?.start ?? 0;
+    const at = absolute !== undefined && absolute >= p.start && absolute <= p.end ? absolute - p.start : fallback;
+    setCaret(at); setAnchor(at); setSelecting(false); setCaretDragging(false);
+  };
+  const edit = () => {
+    const d = doc(); if (!d || discardToken()) return;
     setFocus("document"); scroll.stop();
-    if (draft()) { setMode("edit"); if (select) { setAnchor(caret()); setSelecting(true); } return; }
-    request("edit", "document.edit", { id: d.id, revision: d.revision, row: Math.max(0, Math.floor(scroll.offset() / LINE_H)) }, p => {
-      cleanText = p.text; history.clear(); setHistorySizes(history.sizes()); setDraft(p); setCaret(0); setAnchor(0); setSelecting(select); setMode("edit"); setDirty(false); op = "";
-      setStatus(select ? "Hold space, then drag to select" : "Editing source excerpt");
+    if (draft()) { setMode("edit"); return; }
+    request("edit", "draft.begin", { id: d.id, revision: d.revision, row: Math.max(0, Math.floor(scroll.offset() / LINE_H)), token: `draft-${d.id}-${ticks}-${Math.floor(Math.random() * 1e9)}` }, p => {
+      adoptWindow(p, p.start); editorScroll.scrollTo(p.first * 18, { immediate: true }); setMode("edit"); op = "";
+      setStatus(p.stagedDirty ? "Resumed staged draft" : "Editing document");
     });
+  };
+  const createDocument = () => {
+    if (creating() || !online() || !newName().trim()) return;
+    createOp ||= `create-${ticks}-${Math.floor(Math.random() * 1e9)}`;
+    if (request("create", "document.create", { name: newName(), op: createOp }, p => {
+      setCreating(false); clearTiles(); setDoc(p.document); adoptWindow(p.window, p.window.start);
+      files.clear(); fileChanges.clear(); setQuery(""); setTotal(p.total); setSelected(p.position);
+      libraryScroll.scrollTo(p.position * FILE_H, { immediate: true }); editorScroll.scrollTo(0, { immediate: true }); scroll.scrollTo(0, { immediate: true });
+      setMode("edit"); setFocus("document"); setStatus("Document created; ready to edit"); createOp = "";
+    }, () => setCreating(false))) { setCreating(true); setStatus("Creating document..."); }
+  };
+  const cancelCreate = () => { if (!creating()) { setMode("read"); setNewName(""); createOp = ""; } };
+  const seekEditor = (row: number) => { editorScroll.scrollTo(Math.max(0, row) * 18, { immediate: true }); wantWindow = { row: Math.max(0, Math.floor(row)) }; };
+  const pumpEditor = () => {
+    const d = draft(); if (!d || !online()) return;
+    if (!pendingSeek && !deferredKeys.length && saveWanted && d.text === cleanText) {
+      op ||= `save-${doc()!.id}-${ticks}-${Math.floor(Math.random() * 1e9)}`;
+      request("save", "draft.save", { id: doc()!.id, revision: d.revision, token: d.token, seq: d.seq, op }, () => {
+        saveWanted = false; setSaving(false); setDirty(false); setDraft(undefined); setStatus("Saved on Mac"); open(doc()!.id, true);
+      }, () => { saveWanted = false; }); return;
+    }
+    if (!pendingSeek && !wantWindow && mode() === "edit") {
+      const from = editorFirst() - d.first;
+      if (d.text.length > 640) wantWindow = { offset: d.start + caret() };
+      else if (from < 0 || from + 10 > source().length && d.end < d.chars) wantWindow = { row: editorFirst() };
+    }
+    if (!pendingSeek && (wantWindow || saveWanted)) {
+      const target = wantWindow ?? { row: editorFirst() }; wantWindow = undefined;
+      pendingSeek = { payload: { token: d.token, seq: d.seq, op: `seek-${ticks}-${Math.floor(Math.random() * 1e9)}`, ...target,
+        ...(d.text !== cleanText ? { patch: { start: d.start, end: d.end, text: d.text } } : {}) }, version: localVersion, sentText: d.text, first: d.first };
+    }
+    const pending = pendingSeek; if (!pending) return;
+    if (request("seek", "draft.seek", pending.payload, p => {
+      pendingSeek = undefined; setSeeking(false);
+      if (draft()?.token !== p.token) return;
+      const current = draft()!, absolute = current.start + caret();
+      if (localVersion !== pending.version) {
+        // A reply cannot replace keystrokes entered while the old window was in flight.
+        cleanText = pending.sentText;
+        setDraft({ ...current, end: current.start + pending.sentText.length, seq: p.seq, totalRows: p.totalRows, chars: p.chars, stagedDirty: p.stagedDirty, undo: p.undo, redo: p.redo });
+        setDirty(p.stagedDirty || current.text !== cleanText); wantWindow ??= { row: pending.payload.row, offset: pending.payload.offset };
+      } else {
+        adoptWindow(p, pending.payload.offset ?? absolute);
+        if (pending.payload.history) editorScroll.scrollTo(p.first * 18, { immediate: true });
+        flushingKeys = true;
+        for (let n = 0; n < 64 && deferredKeys.length; n++) {
+          const value = deferredKeys[0], current = draft()!;
+          if (value === "DEL") {
+            if (!caret() && current.start > 0) break;
+            deferredKeys.shift(); deleteBackward();
+          } else {
+            let count = Math.min(value.length, SOURCE_EDIT_CHARS - current.text.length);
+            if (/[\uDC00-\uDFFF]/.test(value[count] ?? "")) count--;
+            if (!count) break;
+            deferredKeys.shift(); insert(value.slice(0, count));
+            if (count < value.length) deferredKeys.unshift(value.slice(count));
+          }
+        }
+        if (deferredKeys.length) wantWindow = { offset: draft()!.start + caret() };
+        flushingKeys = false;
+      }
+    }, () => { setSeeking(false); saveWanted = false; })) setSeeking(true);
   };
   const snapshot = (): EditSnapshot => ({ text: draft()!.text, caret: caret(), anchor: anchor(), selecting: selecting() });
   const restore = (value: EditSnapshot | undefined) => {
     if (!value || !draft()) return;
     setDraft({ ...draft()!, text: value.text }); setCaret(value.caret); setAnchor(value.anchor); setSelecting(value.selecting);
-    setDirty(value.text !== cleanText); setHistorySizes(history.sizes()); op = "";
+    localVersion++; setDirty(!!draft()?.stagedDirty || value.text !== cleanText); setHistorySizes(history.sizes()); op = "";
   };
+  const historyBusy = () => !!(pendingSeek?.payload.history || wantWindow?.history);
   const insert = (add: string, range = selection()) => {
-    if (saving()) return;
+    if (saving() && !flushingKeys || historyBusy()) return;
     const d = draft(); if (!d) return;
+    if (deferredKeys.length && !flushingKeys) { deferKey(add); return; }
     const [from, to] = range;
-    if (d.text.length - (to - from) + add.length > 768) { setStatus("Excerpt is full; save before continuing"); return; }
+    if (d.text.length - (to - from) + add.length > SOURCE_EDIT_CHARS) { if (from !== to) insert("", range); deferKey(add); return; }
     history.record(snapshot()); setHistorySizes(history.sizes());
     const text = d.text.slice(0, from) + add + d.text.slice(to);
-    setDraft({ ...d, text });
-    setCaret(from + add.length); setAnchor(from + add.length); setSelecting(false); setDirty(text !== cleanText); op = "";
+    localVersion++; setDraft({ ...d, text });
+    setCaret(from + add.length); setAnchor(from + add.length); setSelecting(false); setDirty(d.stagedDirty || text !== cleanText); op = "";
+  };
+  const deferKey = (value: string) => {
+    // Only boundary input waits; ordinary edits remain local. Keep a fixed queue.
+    if (deferredKeys.length >= 64) { setStatus("Input buffer full; reconnect to continue"); return; }
+    deferredKeys.push(value); setDirty(true); wantWindow = { offset: draft()!.start + caret() };
+    setStatus("Loading source; input retained");
+  };
+  const deleteBackward = () => {
+    const d = draft(); if (!d) return;
+    const [from, to] = selection();
+    if (from !== to) { insert(""); return; }
+    const n = caret() > 1 && /[\uDC00-\uDFFF]/.test(d.text[caret() - 1]) ? 2 : 1;
+    if (caret()) insert("", [caret() - n, caret()]); else if (d.start) deferKey("DEL");
   };
   const key = (value: string) => {
-    if (saving() || sheetModal() || menu()) return;
+    if (saving() || creating() || sheetModal() || menu() || historyBusy()) return;
     if (value === "SHIFT") {
       setShift(shift() === "locked" ? "off" : shift() === "once" ? ticks - lastShift <= 21 ? "locked" : "off" : "once");
       lastShift = ticks; return;
     }
     lastShift = -100;
     if (value === "#+=") { setSymbols(!symbols()); return; }
-    if (value === "DONE") { mode() === "search" ? search() : save(); return; }
+    if (value === "DONE") { mode() === "create" ? createDocument() : mode() === "search" ? search() : save(); return; }
+    if (mode() === "create") {
+      if (value === "ENTER" || value === "DONE") { createDocument(); return; }
+      setNewName(name => value === "DEL" ? name.slice(0, -1) : (name + (value === "SPACE" ? " " : shift() !== "off" ? value.toUpperCase() : value)).slice(0, 80));
+      createOp = ""; blink.reset(); if (value !== "DEL" && shift() === "once") setShift("off"); return;
+    }
     if (mode() === "search") {
       setQuery(q => value === "DEL" ? q.slice(0, -1) : (q + (value === "SPACE" ? " " : value === "ENTER" ? "" : shift() !== "off" ? value.toUpperCase() : value)).slice(0, 80));
       if (value !== "DEL" && shift() === "once") setShift("off"); return;
     }
     const d = draft(); if (!d) return;
     if (value === "DEL") {
-      const [from, to] = selection();
-      if (from !== to) { insert(""); return; }
-      const n = caret() > 1 && /[\uDC00-\uDFFF]/.test(d.text[caret() - 1]) ? 2 : 1;
-      if (caret()) insert("", [caret() - n, caret()]);
+      if (deferredKeys.length) deferKey("DEL"); else deleteBackward();
     } else { insert(value === "SPACE" ? " " : value === "ENTER" ? "\n" : shift() !== "off" ? value.toUpperCase() : value); if (shift() === "once") setShift("off"); }
   };
   const moveCaret = (n: number) => {
+    if (!draft() || deferredKeys.length || historyBusy()) return;
+    const requested = caret() + n;
+    if ((requested < 0 && draft()!.start > 0) || (requested > draft()!.text.length && draft()!.end < draft()!.chars)) {
+      wantWindow = { offset: Math.max(0, Math.min(draft()!.chars + draft()!.text.length - (draft()!.end - draft()!.start), draft()!.start + requested)) };
+    }
     let next = Math.max(0, Math.min(draft()?.text.length ?? 0, caret() + n));
     if (/[\uDC00-\uDFFF]/.test(draft()?.text[next] ?? "")) next += n < 0 ? -1 : 1;
     setCaret(next); if (!selecting()) setAnchor(next);
@@ -196,17 +309,17 @@ export function createDoc() {
   };
   const dragCaret = (dx: number, dy: number) => {
     const next = moveSourceCaret(draft()?.text ?? "", caret(), dx, dy, SOURCE_COLUMNS);
+    const row = caretRow() - editorBase();
+    if (dy && (row + dy < 0 || row + dy >= source().length)) {
+      wantWindow = { row: Math.max(0, caretRow() + dy) }; editorScroll.scrollTo(Math.max(0, caretRow() + dy - 4) * 18);
+    }
     moveCaret(next - caret());
   };
   const save = () => {
-    const d = doc(), e = draft(); if (!d || !e || saving()) return;
+    if (!doc() || !draft() || saving()) return;
     if (!dirty()) { setMode("read"); setSelecting(false); return; }
-    op ||= `${d.id}-${d.revision.slice(0, 16)}-${ticks}-${Math.floor(Math.random() * 1000000000)}`;
-    const sent = request("save", "document.save", { ...e, id: d.id, op }, () => {
-      setSaving(false); setDirty(false); setStatus("Saved on Mac"); open(d.id, true);
-    });
-    if (sent) { setSaving(true); setStatus("Saving on Mac..."); }
-    else setStatus("Draft retained; reconnect to save");
+    if (!online()) { setStatus("Draft retained; reconnect to save"); return; }
+    saveWanted = true; setSaving(true); setStatus("Saving document on Mac...");
   };
   const search = () => {
     clearPending(); files.clear(); fileChanges.clear(); setTotal(0); setMode("read"); setFocus("library");
@@ -237,6 +350,7 @@ export function createDoc() {
   const cancelDiscard = () => { setConfirmDiscard(false); setStatus("Draft retained"); };
   const discard = () => {
     if (!confirmDiscard() || saving()) return;
+    deferredKeys.length = 0; setDiscardToken(draft()?.token); pendingSeek = undefined; wantWindow = undefined; saveWanted = false; setSeeking(false);
     clearPending(); history.clear(); setHistorySizes(history.sizes()); setDirty(false); setDraft(undefined); setSelecting(false); setMode("read"); setConfirmDiscard(false);
     setCaretDragging(false); setStatus("Changes discarded");
     if (doc() && online()) open(doc()!.id, true);
@@ -244,13 +358,14 @@ export function createDoc() {
   const perform = (action: Action) => {
     if (action !== "discard") setConfirmDiscard(false);
     switch (action) {
+      case "new": if (!dirty() && !pendingSeek && !discardToken()) { setNewName(""); setMode("create"); setFocus("document"); scroll.stop(); libraryScroll.stop(); } break;
       case "open": ensureSelected(); { const item = files.get(selected()); if (item) open(item.id); } break;
       case "focus-list": setFocus("library"); break;
       case "focus-document": setFocus("document"); break;
       case "search": setMode("search"); setFocus("library"); break;
       case "clear-search": setQuery(""); search(); break;
-      case "undo": if (mode() === "edit" && draft() && !saving()) restore(history.undo(snapshot())); break;
-      case "redo": if (mode() === "edit" && draft() && !saving()) restore(history.redo(snapshot())); break;
+      case "undo": if (mode() === "edit" && draft() && !saving()) { const value = history.undo(snapshot()); if (value) restore(value); else if (draft()!.text === cleanText) wantWindow = { history: -1 }; } break;
+      case "redo": if (mode() === "edit" && draft() && !saving()) { const value = history.redo(snapshot()); if (value) restore(value); else if (draft()!.text === cleanText) wantWindow = { history: 1 }; } break;
       case "refresh": clearPending(); files.clear(); fileChanges.clear(); retryAt = 0; break;
       case "edit": edit(); break;
       case "read": setMode("read"); setSelecting(false); setAnchor(caret()); setCaretDragging(false); setStatus(dirty() ? "Draft retained; tap Resume to edit" : "L: Files   R: Document"); break;
@@ -269,12 +384,17 @@ export function createDoc() {
       case "previous-heading": nextHeading(-1); break;
     }
   };
+  const codeOffset = (block: number) => { codeVersion(); return codeOffsets.get(block) ?? 0; };
+  const firstCode = () => {
+    for (let n = firstRow(); n < firstRow() + 10; n++) { rowChanges.read(n); const code = rowSpecs.get(n)?.code; if (code) return code; }
+  };
   const canAction = (action: Action): boolean => {
-    if (sheetModal() || saving()) return false;
+    if (sheetModal() || saving() || creating()) return false;
+    if (action === "new") return online() && !dirty() && !pendingSeek && !discardToken();
     if (["search", "refresh", "focus-list", "clear-search"].includes(action)) return true;
     if (action === "open") return online() && !dirty() && total() > 0;
     if (!doc()) return false;
-    if (action === "undo" || action === "redo") return mode() === "edit" && historySizes()[action === "undo" ? 0 : 1] > 0;
+    if (action === "undo" || action === "redo") return mode() === "edit" && (historySizes()[action === "undo" ? 0 : 1] > 0 || draft()?.text === cleanText && (action === "undo" ? draft()?.undo ?? 0 : draft()?.redo ?? 0) > 0);
     if (action === "select") return mode() === "edit";
     if (action === "copy") return mode() === "edit" && selection()[0] !== selection()[1];
     if (action === "paste") return mode() === "edit" && !!clipboard;
@@ -282,13 +402,13 @@ export function createDoc() {
     if (action === "save") return !!draft() && dirty() && online();
     if (action === "discard") return !!draft() && dirty();
     if (action === "heading" || action === "previous-heading" || action === "link") return mode() === "read" && online() && (action !== "link" || !!doc()?.links.length);
-    return action !== "edit" || !!draft() || online();
+    return action !== "edit" || !discardToken() && (!!draft() || online());
   };
   onFrame(buttons => {
     ticks++; setOnline(io.connected());
     const session = io.session();
     if (session > 0 && session !== lastSession) {
-      lastSession = session; clearPending(); retryAt = 0; setSaving(false);
+      lastSession = session; clearPending(); retryAt = 0; setSaving(false); saveWanted = false; setCreating(false);
       setStatus(dirty() ? "Reconnected - draft retained" : "L: Library   R: Document");
       const current = doc();
       if (current) request("revalidate", "document.open", { id: current.id }, p => {
@@ -304,6 +424,9 @@ export function createDoc() {
       if (confirmDiscard() && pressed & BTN.CROSS) cancelDiscard();
       else if (confirmDiscard() && pressed & BTN.CIRCLE) discard();
       return;
+    }
+    if (mode() === "create") {
+      if (pressed & BTN.CIRCLE) createDocument(); if (pressed & BTN.CROSS) cancelCreate(); return;
     }
     const bank = heldBank(buttons);
     const directions = buttons & (BTN.UP | BTN.DOWN | BTN.LEFT | BTN.RIGHT);
@@ -325,7 +448,12 @@ export function createDoc() {
       }
       return;
     }
-    if (mode() !== "edit" || focus() === "library") {
+    const code = firstCode();
+    if (mode() === "read" && focus() === "document" && code && code.width > 256 && nav & (BTN.LEFT | BTN.RIGHT)) {
+      codeOffsets.set(code.block, Math.max(0, Math.min(code.width - 256, codeOffset(code.block) + (nav & BTN.RIGHT ? 21 : -21))));
+      while (codeOffsets.size > 16) codeOffsets.delete(codeOffsets.keys().next().value!);
+      setCodeVersion(v => v + 1); setStatus("Code: D-pad left / right");
+    } else if (mode() !== "edit" || focus() === "library") {
       if (pressed & BTN.LEFT) setFocus("library");
       if (pressed & BTN.RIGHT) setFocus("document");
     }
@@ -338,6 +466,11 @@ export function createDoc() {
     }
     if (!bank) {
       if (mode() === "edit" && focus() === "document") {
+        const rx = rightAnalogX(), ry = rightAnalogY();
+        stickX = rx ? stickX + rx * (0.12 + Math.abs(rx) * 0.48) : 0;
+        stickY = ry ? stickY + ry * (0.06 + Math.abs(ry) * 0.18) : 0;
+        const dx = Math.trunc(stickX), dy = Math.trunc(stickY);
+        if (dx || dy) { dragCaret(dx, dy); stickX -= dx; stickY -= dy; }
         if (pressed & BTN.LEFT) moveCaret(-1); if (pressed & BTN.RIGHT) moveCaret(1);
         if (nav & BTN.UP) dragCaret(0, -1); if (nav & BTN.DOWN) dragCaret(0, 1);
         if (pressed & BTN.CIRCLE) key("ENTER"); if (pressed & BTN.CROSS) key("DEL");
@@ -354,6 +487,8 @@ export function createDoc() {
     const motion = scroll.offset() - oldOffset;
     if (motion) lastDirection = motion > 0 ? 1 : -1;
     if (!online()) { if (!saving()) setStatus(dirty() ? "Offline - draft retained" : "Waiting for paired Mac..."); return; }
+    if (discardToken()) { const token = discardToken(); request("discard", "draft.discard", { token }, () => { if (discardToken() === token) setDiscardToken(undefined); }); }
+    pumpEditor();
     const firstFile = Math.max(0, Math.floor(libraryScroll.offset() / FILE_H)), page = Math.floor(firstFile / 12) * 12;
     if (!files.has(firstFile)) list(page);
     if (total() > page + 12 && !files.has(page + 12)) list(page + 12);
@@ -380,15 +515,16 @@ export function createDoc() {
     let issued = 0;
     for (let n = 0; n < 60 && inflight.size < 4 && issued < 2; n++) {
       const row = n < 12 ? first + n : lastDirection >= 0 ? (n < 44 ? first + n : first - (n - 43)) : (n < 44 ? first - (n - 11) : first + n - 32);
-      if (row < 0 || row >= d.rows || tiles.has(row) || inflight.has(`tile:${row}`)) continue;
+      const x = rowSpecs.get(row)?.code ? codeOffset(rowSpecs.get(row)!.code!.block) : 0;
+      if (row < 0 || row >= d.rows || tiles.get(row)?.x === x || inflight.has(`tile:${row}`)) continue;
       const resource = tileResources.get(row) ?? createResourceSlot<Tile>(() => rowChanges.notify(row));
       let ticket = 0;
-      if (request(`tile:${row}`, "document.tile", { id: d.id, revision: d.revision, layout: d.layout, row }, p => {
+      if (request(`tile:${row}`, "document.tile", { id: d.id, revision: d.revision, layout: d.layout, row, x }, p => {
         const handle = uploadLine(p.mask, p.kind, false, p.colors);
         if (handle < 0) { resource.reject(ticket, "Texture unavailable"); return; }
-        const tile = { handle, kind: p.kind, start: p.start };
+        const tile = { handle, kind: p.kind, start: p.start, x: p.x ?? 0 };
         if (!resource.resolve(ticket, tile)) { getOps().freeTexture?.(handle); return; }
-        tiles.set(row, tile);
+        const previous = tiles.get(row); tiles.set(row, tile); if (previous) getOps().freeTexture?.(previous.handle);
 
       }, error => resource.reject(ticket, error))) {
         tileResources.set(row, resource); ticket = resource.begin(); issued++;
@@ -407,14 +543,14 @@ export function createDoc() {
   });
   onCleanup(() => { clearPending(); clearTiles(); for (const handle of textTiles.values()) getOps().freeTexture?.(handle); });
   return {
-    mode, setMode, focus, setFocus, menu, commandIndex, canAction, sheetModal, setSheetModal, historySizes, status, online, total, textVersion, doc, draft, caret, query, shift, symbols, selected, setSelected,
-    firstRow, firstFile, source, sourceCellWidth, sourceWidth, editorFirst, editorScroll, caretRow, caretVisible, caretDragging, setCaretDragging, dragCaret,
+    mode, setMode, focus, setFocus, menu, commandIndex, canAction, sheetModal, setSheetModal, historySizes, historyBusy, status, online, total, textVersion, doc, draft, caret, query, shift, symbols, selected, setSelected,
+    newName, creating, createDocument, cancelCreate, seeking, seekEditor, discardToken, codeOffset, firstCode, editorBase, editorTotal, caretX, firstRow, firstFile, source, sourceCellWidth, sourceWidth, editorFirst, editorScroll, caretRow, caretVisible, caretDragging, setCaretDragging, dragCaret,
     tiles, rowSpecs, files, textTiles, editorRows, sourceLines, scroll, libraryScroll, activeScroll, dirty, saving, selecting, selection, confirmDiscard,
     key, moveCaret, save, search, activate, edit, jump, open, nextHeading, followLink, toggleSelect, perform, discard, cancelDiscard,
     rowSpec: (row: number) => { rowChanges.read(row); return rowSpecs.get(row); },
-    rowResource: (row: number): ResourceState<Tile> => { rowChanges.read(row); return tileResources.get(row)?.state() ?? pending(); },
+    rowResource: (row: number): ResourceState<Tile> => { rowChanges.read(row); return tiles.has(row) ? ready(tiles.get(row)!) : tileResources.get(row)?.state() ?? pending(); },
     fileResource: (index: number): ResourceState<FileRow> => { fileChanges.read(index); const file = files.get(index); return file ? ready(file) : pending(); },
-    diagnostics: () => ({ cachedTiles: tiles.size, resourceSlots: tileResources.size, pending: inflight.size, offset: scroll.offset(), frame: ticks }),
+    diagnostics: () => ({ cachedTiles: tiles.size, resourceSlots: tileResources.size, pending: inflight.size, offset: scroll.offset(), frame: ticks, sourceChars: draft()?.text.length ?? 0, deferredKeys: deferredKeys.length }),
   };
 }
 export type Doc = ReturnType<typeof createDoc>;

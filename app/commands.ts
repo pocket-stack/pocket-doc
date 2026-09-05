@@ -1,9 +1,10 @@
 import { BTN } from "@pocketjs/framework/input";
 export type Bank = "library" | "document";
-export type Action = "open" | "focus-list" | "search" | "refresh" | "clear-search" | "edit" | "read" | "save" | "link" |
+export type Action = "new" | "open" | "focus-list" | "search" | "refresh" | "clear-search" | "edit" | "read" | "save" | "link" |
   "select" | "copy" | "paste" | "discard" | "focus-document" | "top" | "heading" | "previous-heading" | "end" | "undo" | "redo";
 export const BANKS: Record<Bank, { title: string; columns: number; actions: readonly { label: string; action: Action }[] }> = {
   library: { title: "Files", columns: 1, actions: [
+    { label: "New document", action: "new" },
     { label: "Open selected", action: "open" }, { label: "Search files", action: "search" },
     { label: "Clear search", action: "clear-search" }, { label: "Refresh list", action: "refresh" },
     { label: "Focus files", action: "focus-list" },

@@ -28,7 +28,9 @@ globalThis.offload = {
         if (failures) { replies.push(JSON.stringify({id:request.id,error:"smoke unavailable"})); return true; }
         value = {mask,kind:4,start:p.row*10}; break;
       case "text.tile": value = {mask}; break;
-      case "document.edit": value = {start:0,end:12,text:"hello world\n",revision:document.revision}; break;
+      case "document.create": value = {document:{...document,id:1001,title:p.name},position:1000,total:1001,window:{token:"draft-created",seq:0,start:0,end:6,text:"# new\n",revision:document.revision,first:0,totalRows:2,chars:6,stagedDirty:false,undo:0,redo:0}}; break;
+      case "draft.discard": value = {discarded:true}; break;
+      case "draft.begin": value = {token:"draft-smoke",seq:0,start:0,end:12,text:"hello world\n",revision:document.revision,first:0,totalRows:2,chars:12,stagedDirty:false,undo:0,redo:0}; break;
       default: throw new Error("Unexpected smoke capability: "+request.method);
     }
     replies.push(JSON.stringify({id:request.id,payload:JSON.stringify(value)})); return true;
@@ -58,6 +60,10 @@ try {
   s.perform("discard"); frames(1); check(s.confirmDiscard(), "discard sheet missing");
   s.cancelDiscard(); frames(14); check(s.draft().text===draft, "cancel discarded the draft");
   check(s.draft().text===draft, "offline draft lost");
+  session=2; frames(30); s.perform("discard"); frames(14); s.discard(); frames(40);
+  s.perform("new"); frames(1); check(s.mode()==="create", "filename dialog missing");
+  s.key("new"); s.createDocument(); frames(30);
+  check(s.mode()==="edit" && s.doc().id===1001, "create did not enter editor");
   std.puts(JSON.stringify({ok:true,frames:ticks,nativeNodeIds:node,uploadedTextures:texture,
-    checks:["offline mount","continuous stick scrolling","table reveal","error fallback","retry","editor","Unicode resource","discard cancellation","offline draft"]})+"\n");
+    checks:["offline mount","continuous stick scrolling","table reveal","error fallback","retry","editor","Unicode resource","discard cancellation","offline draft","filename dialog","create-to-editor"]})+"\n");
 } catch (error) { std.puts(String(error)+"\n"+error.stack+"\n"); std.exit(1); }

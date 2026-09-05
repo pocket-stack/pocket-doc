@@ -55,11 +55,12 @@ function DocumentRow(p: { s: Doc; slot: number }) {
   return <View debugName="DocumentBand" class="absolute left-0 w-[256] h-[20] overflow-hidden" style={{ translateY: row() * LINE_H,
     bgColor: spec()?.header ? 0xfff0e7df : spec()?.kind === 3 ? 0xfff6f3f0 : 0xffffffff }}>
     <Show when={spec()?.columns}>
-      <View class="absolute left-0 right-0 top-0 h-[1] bg-[#c7d0dc]" />
+      <View class="absolute left-0 right-0 top-0 h-[1] bg-[#c7d0dc]" style={{ display: spec()?.first ? 0 : 1 }} />
+      <View class="absolute left-0 right-0 bottom-0 h-[1] bg-[#c7d0dc]" style={{ display: spec()?.last ? 0 : 1 }} />
       <For each={spec()?.columns}>{(_, index) => <View class="absolute top-0 bottom-0 w-[1] bg-[#c7d0dc]" style={{ insetL: spec()!.columns!.slice(0, index()).reduce((a, b) => a + b, 0) }} />}</For>
       <View class="absolute right-0 top-0 bottom-0 w-[1] bg-[#c7d0dc]" />
     </Show>
-    <ResourceImage class="absolute left-0 top-[2] w-[256] h-[16] overflow-hidden" state={() => {
+    <ResourceImage class="absolute left-0 top-[2] w-[256] h-[16] overflow-hidden" style={{ translateX: spec()?.code ? (resource().status === "ready" ? (resource() as { status: "ready"; value: { x: number } }).value.x : 0) - p.s.codeOffset(spec()!.code!.block) : 0 }} state={() => {
       const state = resource();
       return state.status === "ready" ? ready({ handle: state.value.handle, width: BODY_W, height: 16 }) : state;
     }} fallback={() => <Skeleton width={180 - p.slot % 3 * 24} columns={spec()?.columns} />}
@@ -69,12 +70,12 @@ function DocumentRow(p: { s: Doc; slot: number }) {
 
 function SourceRow(p: { s: Doc; index: number }) {
   const index = createMemo(() => slotRow(p.s.editorFirst(), p.index));
-  const row = createMemo(() => p.s.source()[index()]);
+  const row = createMemo(() => p.s.source()[index() - p.s.editorBase()]);
   const left = () => row() ? p.s.sourceWidth(row()!.text.slice(0, Math.max(0, p.s.selection()[0] - row()!.start))) : 0;
   const right = () => row() ? p.s.sourceWidth(row()!.text.slice(0, Math.max(0, p.s.selection()[1] - row()!.start))) : 0;
-  return <View class="absolute left-0 w-[256] h-[18] overflow-hidden" style={{ translateY: index() * 18 }}>
+  return <View class="absolute left-0 w-[256] h-[18] overflow-hidden" style={{ translateY: index() * 18, display: index() < p.s.editorTotal() ? 0 : 1 }}>
     <View class="absolute top-0 h-[16] bg-[#bbd9ff]" style={{ insetL: left(), width: Math.max(0, right() - left()) }} />
-    <AsyncText s={p.s} value={() => row()?.text ?? ""} width={248} mono />
+    <Show when={row()} fallback={<Skeleton width={180} />}><AsyncText s={p.s} value={() => row()?.text ?? ""} width={248} mono /></Show>
   </View>;
 }
 
@@ -86,7 +87,7 @@ function ContextMenu(p: { s: Doc; bank: Bank }) {
     <ClassicPanel active style={{ posType: 1, insetL: (400 - width) / 2, insetT: 24, width, height: 192 }}>
       <Text class="absolute left-0 right-0 top-[7] text-center text-xs font-bold text-white">{bank.title}</Text>
       <For each={bank.actions}>{(item, index) => <ClassicFace selected={p.s.commandIndex() === index()} disabled={!p.s.canAction(item.action)}
-        style={{ posType: 1, insetL: 10 + index() % bank.columns * cell, insetT: 34 + Math.floor(index() / bank.columns) * (bank.columns === 1 ? 26 : 33), width: cell - 3, height: bank.columns === 1 ? 23 : 29 }}>
+        style={{ posType: 1, insetL: 10 + index() % bank.columns * cell, insetT: 34 + Math.floor(index() / bank.columns) * (bank.columns === 1 ? 23 : 33), width: cell - 3, height: bank.columns === 1 ? 20 : 29 }}>
         <Text class="absolute left-0 right-0 text-center text-xs" style={{ insetT: bank.columns === 1 ? 4 : 7, textColor: classicPalette(p.s.commandIndex() === index() ? "primary" : "neutral").textColor }}>{item.label}</Text>
       </ClassicFace>}</For>
       <Text class="absolute left-0 right-0 bottom-[6] text-center text-xs text-[#516984]">D-pad: choose   A: run   B: cancel</Text>
@@ -100,18 +101,18 @@ function Keyboard(p: { s: Doc }) {
     const values = line.split(" "), width = 304 / values.length;
     let x = 8;
     return values.map((value, col) => { const w = row === 3 ? [42, 30, 30, 140, 62][col] : width;
-      const key = { value, x, y: 32 + row * 26, w: w - 2 }; x += w; return key; });
+      const key = { value, x, y: 30 + row * 22, w: w - 2 }; x += w; return key; });
   }));
   let root: NodeMirror | undefined, downKey = "", dx = 0, dy = 0;
   const release = () => { setPressed(""); p.s.setCaretDragging(false); };
-  createGesture({ surface: "auxiliary", region: { node: () => root }, longPressSeconds: 0.35,
+  createGesture({ surface: "auxiliary", allowWhenBlocked: true, region: { node: () => root }, longPressSeconds: 0.35,
     onDown(c) {
       downKey = ""; dx = dy = 0;
-      if (p.s.sheetModal() || p.s.menu() || p.s.saving() || p.s.mode() !== "edit" && p.s.mode() !== "search") return;
-      const hit = keys().find(k => c.x >= k.x && c.x < k.x + k.w + 2 && c.y >= k.y && c.y < k.y + 26);
+      if (p.s.sheetModal() || p.s.menu() || p.s.saving() || p.s.historyBusy() || p.s.creating() || p.s.mode() !== "edit" && p.s.mode() !== "search" && p.s.mode() !== "create") return;
+      const hit = keys().find(k => c.x >= k.x && c.x < k.x + k.w + 2 && c.y >= k.y && c.y < k.y + 22);
       if (hit) {
         downKey = hit.value; setPressed(downKey);
-        p.s.setFocus(p.s.mode() === "edit" ? "document" : "library");
+        p.s.setFocus(p.s.mode() === "search" ? "library" : "document");
         if (downKey !== "SPACE") p.s.key(downKey);
       }
     },
@@ -128,11 +129,11 @@ function Keyboard(p: { s: Doc }) {
     onTap() { if (downKey === "SPACE") p.s.key("SPACE"); },
     onUp: release, onCancel() { downKey = ""; release(); },
   });
-  return <View ref={root} debugName="DocKeyboard" class="absolute left-0 top-[30] w-[320] h-[108]" style={{ display: p.s.mode() === "edit" || p.s.mode() === "search" ? 0 : 1 }}>
+  return <View ref={root} debugName="DocKeyboard" class="absolute left-0 top-[28] w-[320] h-[90]" style={{ display: p.s.mode() === "edit" || p.s.mode() === "search" || p.s.mode() === "create" ? 0 : 1 }}>
     <For each={keys()}>{k => <ClassicFace tone="key" pressed={pressed() === k.value} selected={k.value === "SHIFT" && p.s.shift() !== "off"} disabled={p.s.saving()}
-      style={{ posType: 1, height: 23, insetL: k.x, insetT: k.y - 30, width: k.w }}>
-      <Show when={k.value === "SHIFT"} fallback={<Text class="absolute left-0 right-0 top-[5] text-xs text-center" style={{ textColor: classicPalette("key", pressed() === k.value).textColor }}>{p.s.shift() !== "off" && k.value.length === 1 ? k.value.toUpperCase() : k.value}</Text>}>
-        <Image debugName="ShiftIcon" class="absolute left-[6] top-[3] w-[16] h-[16]" src={p.s.shift() === "locked" ? "shift-lock.svg" : "shift.svg"} />
+      style={{ posType: 1, height: 20, insetL: k.x, insetT: k.y - 28, width: k.w }}>
+      <Show when={k.value === "SHIFT"} fallback={<Text class="absolute left-0 right-0 top-[3] text-xs text-center" style={{ textColor: classicPalette("key", pressed() === k.value).textColor }}>{p.s.shift() !== "off" && k.value.length === 1 ? k.value.toUpperCase() : k.value}</Text>}>
+        <Image debugName="ShiftIcon" class="absolute left-[6] top-[2] w-[16] h-[16]" src={p.s.shift() === "locked" ? "shift-lock.svg" : "shift.svg"} />
       </Show>
     </ClassicFace>}</For>
   </View>;
@@ -140,12 +141,12 @@ function Keyboard(p: { s: Doc }) {
 
 function Deck(p: { s: Doc }) {
   let listPad: NodeMirror | undefined, docPad: NodeMirror | undefined;
-  const typing = () => p.s.mode() === "edit" || p.s.mode() === "search";
-  const y = () => typing() ? 145 : 33;
-  const height = () => typing() ? 89 : 201;
+  const typing = () => p.s.mode() !== "read";
+  const y = () => typing() ? 118 : 33;
+  const height = () => typing() ? 118 : 201;
   const target = () => p.s.mode() === "edit" ? p.s.editorScroll : p.s.scroll;
   const blocked = () => p.s.sheetModal() || !!p.s.menu();
-  createEffect(() => { if (p.s.menu()) onCleanup(pushTouchBlock()); });
+  createEffect(() => { if (p.s.menu() || p.s.mode() === "create") onCleanup(pushTouchBlock()); });
   createGesture({ surface: "auxiliary", region: { node: () => listPad }, axis: "y", panSlop: 2,
     onDown: () => { if (!blocked()) { p.s.setFocus("library"); p.s.libraryScroll.beginDrag(); } },
     onPanMove: c => p.s.libraryScroll.drag(-c.fdy * 1.8),
@@ -162,20 +163,20 @@ function Deck(p: { s: Doc }) {
   });
   const buttonStyle = (x: number, top: number, width: number, shown = true) => ({ posType: 1, insetL: x, insetT: top, width, height: 23, display: shown ? 0 : 1 });
   // Fixed button subtrees mount before the deck wrapper (QuickJS stack bound).
-  const close = <ClassicButton debugName="ReadButton" surface="auxiliary" label={p.s.mode() === "search" ? "Cancel" : "Read"}
-    style={buttonStyle(5, 3, 59, typing())} disabled={blocked() || p.s.saving()}
-    onPress={() => p.s.mode() === "search" ? p.s.setMode("read") : p.s.perform("read")} />;
+  const close = <ClassicButton debugName="ReadButton" surface="auxiliary" allowWhenBlocked label={p.s.mode() === "search" || p.s.mode() === "create" ? "Cancel" : "Read"}
+    style={buttonStyle(5, 3, 59, typing())} disabled={blocked() || p.s.saving() || p.s.creating()}
+    onPress={() => p.s.mode() === "create" ? p.s.cancelCreate() : p.s.mode() === "search" ? p.s.setMode("read") : p.s.perform("read")} />;
   const discard = <ClassicButton debugName="DiscardButton" surface="auxiliary" label="Discard" tone="danger"
     style={buttonStyle(70, 3, 73, p.s.mode() === "edit")} disabled={blocked() || p.s.saving() || !p.s.dirty()}
     onPress={() => p.s.perform("discard")} />;
-  const save = <ClassicButton debugName="SaveButton" surface="auxiliary" label={p.s.mode() === "search" ? "Find" : p.s.saving() ? "Saving" : "Save"} tone="primary"
-    style={buttonStyle(249, 3, 66, typing())} disabled={blocked() || p.s.saving()}
-    onPress={() => p.s.mode() === "search" ? p.s.search() : p.s.save()} />;
+  const save = <ClassicButton debugName="SaveButton" surface="auxiliary" allowWhenBlocked label={p.s.mode() === "create" ? "Create" : p.s.mode() === "search" ? "Find" : p.s.saving() ? "Saving" : "Save"} tone="primary"
+    style={buttonStyle(249, 3, 66, typing())} disabled={blocked() || p.s.saving() || p.s.creating() || p.s.mode() === "create" && !p.s.newName().trim()}
+    onPress={() => p.s.mode() === "create" ? p.s.createDocument() : p.s.mode() === "search" ? p.s.search() : p.s.save()} />;
   const select = <ClassicButton debugName="SelectButton" surface="auxiliary" label="Select" selected={p.s.mode() === "edit" && p.s.selecting()} edge="left"
-    style={buttonStyle(130, y() + height() - 31, 89)} disabled={blocked() || p.s.saving() || p.s.mode() !== "edit"}
+    style={{ ...buttonStyle(typing() ? 181 : 130, typing() ? y() + 2 : y() + height() - 31, typing() ? 64 : 89, p.s.mode() === "read" || p.s.mode() === "edit"), height: typing() ? 18 : 23 }} disabled={blocked() || p.s.saving() || p.s.mode() !== "edit"}
     onPress={() => { p.s.setFocus("document"); p.s.toggleSelect(); }} />;
   const copy = <ClassicButton debugName="CopyEditButton" surface="auxiliary" label={p.s.mode() === "edit" ? "Copy" : p.s.draft() ? "Resume" : "Edit"} edge="right"
-    style={buttonStyle(218, y() + height() - 31, 88)} disabled={blocked() || p.s.saving() || !p.s.doc() || p.s.mode() === "edit" && p.s.selection()[0] === p.s.selection()[1]}
+    style={{ ...buttonStyle(typing() ? 244 : 218, typing() ? y() + 2 : y() + height() - 31, typing() ? 66 : 88, p.s.mode() === "read" || p.s.mode() === "edit"), height: typing() ? 18 : 23 }} disabled={blocked() || p.s.saving() || p.s.discardToken() !== undefined || p.s.mode() === "create" || !p.s.doc() || p.s.mode() === "edit" && p.s.selection()[0] === p.s.selection()[1]}
     onPress={() => { p.s.setFocus("document"); p.s.mode() === "edit" ? p.s.perform("copy") : p.s.edit(); }} />;
   const sheet = <ClassicSheet debugName="DiscardSheet" surface="auxiliary" open={p.s.confirmDiscard()}
     title="Discard unsaved changes?" message="The document on Mac stays unchanged."
@@ -185,22 +186,23 @@ function Deck(p: { s: Doc }) {
   return <View debugName="DocDeck" class="relative w-full h-full bg-[#dbe1e9]">
     <View debugName="EditorNavigation" class="absolute left-0 right-0 top-0 h-[28] bg-gradient-to-b from-[#f6f8fb] to-[#c1cad7]">
       <Show when={typing()} fallback={<Text class="absolute left-[9] top-[7] text-xs font-bold text-[#405c80]">{p.s.focus() === "library" ? "Files focused" : "Document focused"}</Text>}>
-        <Text class="absolute left-[148] right-[77] top-[7] text-center text-xs font-bold text-[#405c80]">{p.s.mode() === "edit" ? p.s.dirty() ? "Editing *" : "Editing" : "Search"}</Text>
+        <Text class="absolute left-[148] right-[77] top-[7] text-center text-xs font-bold text-[#405c80]">{p.s.mode() === "create" ? "New file" : p.s.mode() === "edit" ? p.s.dirty() ? "Editing *" : "Editing" : "Search"}</Text>
       </Show>
       <Show when={!typing()}><Text class="absolute right-[9] top-[7] text-xs text-[#405c80]">L / R: actions</Text></Show>
     </View>
     {close}{discard}{save}{keyboard}
-    <ClassicPanel debugName="LibraryPadFrame" active={p.s.focus() === "library"} style={{ posType: 1, insetL: 6, width: 108, insetT: y(), height: height() }}>
+    <ClassicPanel headerHeight={typing() ? 22 : 27} debugName="LibraryPadFrame" active={p.s.focus() === "library"} style={{ posType: 1, insetL: 6, width: 108, insetT: y(), height: height() }}>
       <View ref={listPad} debugName="LibraryTouchpad" class="absolute left-0 top-0 w-full h-full">
-        <Text class="absolute left-0 right-0 top-[8] text-center text-xs font-bold" style={{ textColor: classicPalette(p.s.focus() === "library" ? "primary" : "neutral").textColor }}>Files</Text>
-        <Text class="absolute left-0 right-0 text-center text-xs text-[#6c829e]" style={{ insetT: typing() ? 38 : 89 }}>slide to scroll</Text>
-        <Text class="absolute left-0 right-0 bottom-[11] text-center text-xs text-[#6c829e]">A opens</Text>
+        <Text class="absolute text-xs font-bold" style={{ insetL: 0, insetR: 0, insetT: typing() ? 4 : 8, textAlign: 1, textColor: classicPalette(p.s.focus() === "library" ? "primary" : "neutral").textColor }}>Files</Text>
+        <Text class="absolute left-0 right-0 text-center text-xs text-[#6c829e]" style={{ insetT: typing() ? 63 : 89 }}>slide to scroll</Text>
+        <Show when={!typing()}><Text class="absolute left-0 right-0 bottom-[11] text-center text-xs text-[#6c829e]">A opens</Text></Show>
       </View>
     </ClassicPanel>
-    <ClassicPanel debugName="DocumentPadFrame" active={p.s.focus() === "document"} style={{ posType: 1, insetL: 122, width: 192, insetT: y(), height: height() }}>
-      <View ref={docPad} debugName="DocumentTouchpad" class="absolute left-0 top-0 w-full" style={{ height: height() - 33 }}>
-        <Text class="absolute left-0 right-0 top-[8] text-center text-xs font-bold" style={{ textColor: classicPalette(p.s.focus() === "document" ? "primary" : "neutral").textColor }}>{p.s.mode() === "edit" ? "Source" : "Document"}</Text>
-        <Text class="absolute left-0 right-0 text-center text-xs text-[#6c829e]" style={{ insetT: typing() ? 35 : 89 }}>{p.s.mode() === "edit" ? p.s.caretDragging() ? "Release to type" : "Hold space + drag" : p.s.mode() === "search" ? p.s.query() || "Type a query" : "slide / lift to coast"}</Text>
+    <ClassicPanel headerHeight={typing() ? 22 : 27} debugName="DocumentPadFrame" active={p.s.focus() === "document"} style={{ posType: 1, insetL: 122, width: 192, insetT: y(), height: height() }}>
+      <Text class="absolute text-xs font-bold" style={{ insetL: p.s.mode() === "edit" ? 7 : 0, insetR: p.s.mode() === "edit" ? 138 : 0, insetT: typing() ? 4 : 8, textAlign: p.s.mode() === "edit" ? 0 : 1,
+        textColor: classicPalette(p.s.focus() === "document" ? "primary" : "neutral").textColor }}>{p.s.mode() === "create" ? "Filename" : p.s.mode() === "edit" ? "Source" : "Document"}</Text>
+      <View ref={docPad} debugName="DocumentTouchpad" class="absolute left-0 w-full" style={{ insetT: typing() ? 22 : 27, height: height() - (typing() ? 22 : 60) }}>
+        <Text class="absolute left-0 right-0 text-center text-xs text-[#6c829e]" style={{ insetT: typing() ? 35 : 62 }}>{p.s.mode() === "edit" ? p.s.seeking() ? "Loading source..." : "Hold space / C-stick" : p.s.mode() === "create" ? "Enter: create document" : p.s.mode() === "search" ? p.s.query() || "Type a query" : "slide / lift to coast"}</Text>
       </View>
     </ClassicPanel>
     {select}{copy}
@@ -218,6 +220,16 @@ export default function DocApp() {
   const bands = SLOTS.map(slot => <DocumentRow s={s} slot={slot} />);
   const source = SLOTS.map(index => <SourceRow s={s} index={index} />);
   const menus = (Object.keys(BANKS) as Bank[]).map(bank => <ContextMenu s={s} bank={bank} />);
+  const dialog = <View debugName="NewDocumentDialog" class="absolute left-0 top-0 w-full h-full" style={{ display: s.mode() === "create" ? 0 : 1, bgColor: "#10203877" }}>
+    <ClassicPanel active style={{ posType: 1, insetL: 44, insetT: 56, width: 312, height: 126 }}>
+      <Text class="absolute left-0 right-0 top-[7] text-center text-xs font-bold text-white">New document</Text>
+      <Text class="absolute left-[12] top-[37] text-xs text-[#405c80]">Filename (.md is added automatically)</Text>
+      <View class="absolute left-[12] right-[12] top-[58] h-[28] rounded-[3] border border-[#6c8fb7] bg-white">
+        <Text class="absolute left-[6] top-[7] text-xs text-[#243955]">{s.newName().slice(-36) + (s.caretVisible() ? "|" : "")}</Text>
+      </View>
+      <Text class="absolute left-[12] top-[98] text-xs text-[#405c80]">{s.creating() ? "Creating on Mac..." : "A: create   B: cancel"}</Text>
+    </ClassicPanel>
+  </View>;
   const deck = <Deck s={s} />;
   return <>
     <View debugName="PocketDoc" class="relative w-full h-full bg-white overflow-hidden">
@@ -244,7 +256,7 @@ export default function DocApp() {
               {source}
               <View debugName="SourceCaret" class="absolute left-0 top-0 w-[1] h-[16] bg-[#246cc3]" style={{ opacity: s.caretVisible() ? 1 : 0,
                 translateY: s.caretRow() * 18,
-                translateX: s.sourceWidth((s.source()[s.caretRow()]?.text ?? "").slice(0, s.caret() - (s.source()[s.caretRow()]?.start ?? 0))) }} />
+                translateX: s.caretX() }} />
             </View>
           </View>
         </View>
@@ -252,7 +264,7 @@ export default function DocApp() {
       <View class="absolute left-0 right-0 bottom-0 h-[14] bg-gradient-to-b from-[#edf1f6] to-[#d5deea]">
         <Text class="absolute left-[6] top-0 text-xs text-[#516984]">{s.status().slice(0, 62)}</Text>
       </View>
-      {menus}
+      {menus}{dialog}
     </View>
     <AuxiliarySurface>{deck}</AuxiliarySurface>
   </>;

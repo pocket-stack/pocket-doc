@@ -11,10 +11,10 @@ for (const [path, name] of [["/System/Library/Fonts/Supplemental/Arial.ttf", "Do
 }
 const mono = [process.env.DOC_MONO_FONT ?? "", "/System/Library/Fonts/Menlo.ttc", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"].find(path => path && existsSync(path));
 if (!mono || !GlobalFonts.registerFromPath(mono, "DocMono")) throw new Error("Install a monospace font or set DOC_MONO_FONT");
-export const LAYOUT_REVISION = createHash("sha256").update(readFileSync(cjk)).update(readFileSync(mono)).update(`doc-code-v4-${BODY_W}`).digest("hex").slice(0, 16);
+export const LAYOUT_REVISION = createHash("sha256").update(readFileSync(cjk)).update(readFileSync(mono)).update(`doc-code-v5-${BODY_W}`).digest("hex").slice(0, 16);
 export const TILE_W = BODY_W, TILE_H = 16, LINE_H = 20;
-type TableBand = { widths: number[]; cells: string[]; header: boolean };
-export type Row = { text: string; start: number; end: number; kind: number; colors?: { columns: string; palette: string }; table?: TableBand };
+type TableBand = { widths: number[]; cells: string[]; header: boolean; first: boolean; last: boolean };
+export type Row = { text: string; start: number; end: number; kind: number; code?: { block: number; width: number; chars: { char: string; color: string }[] }; table?: TableBand };
 const canvas = createCanvas(TILE_W, TILE_H);
 const ctx = canvas.getContext("2d");
 const font = (kind: number) => kind === 1 ? "bold 14px DocLatin, DocCJK, DocUnicode" : kind === 3 ? "12px DocMono, DocCJK, DocUnicode" : "13px DocLatin, DocCJK, DocUnicode";
@@ -60,25 +60,25 @@ export function layout(source: string) {
       let end = index + 1;
       const closing = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}\\s*$`);
       while (end < lines.length && !closing.test(lines[end])) end++;
+      const block = rows.length;
       rows.push({ text: language ? language.toUpperCase() : "CODE", start, end: start + line.length, kind: 3 });
       const tokens = highlight(lines.slice(index + 1, end).join("\n"), language);
+      let width = TILE_W;
       for (let n = index + 1; n < end; n++) {
-        let offset = offsets[n], first = offset, count = 0, visualColumn = 0;
-        let chars: { char: string; color: string }[] = [];
-        const emit = () => { rows.push({ text: chars.map(c => c.char).join(""), start: first, end: offset, kind: 3,
-          colors: columnColors(chars, TILE_W) }); chars = []; count = 0; first = offset; };
+        let visualColumn = 0;
+        const chars: { char: string; color: string }[] = [];
         for (const token of tokens[n - index - 1] ?? []) for (const char of token.content) {
           const expanded = char === "\t" ? " ".repeat(4 - visualColumn % 4) : char;
           for (const glyph of expanded) {
-            const cells = glyph.codePointAt(0)! > 255 ? 2 : 1;
-            if (count + cells > 36) emit();
-            chars.push({ char: glyph, color: token.color ?? "#24292e" }); count += cells; visualColumn += cells;
+            chars.push({ char: glyph, color: token.color ?? "#24292e" }); visualColumn += glyph.codePointAt(0)! > 255 ? 2 : 1;
           }
-          offset += char.length;
         }
-        emit();
+        width = Math.max(width, visualColumn * 7 + 4);
+        rows.push({ text: chars.map(c => c.char).join(""), start: offsets[n], end: offsets[n] + lines[n].length,
+          kind: 3, code: { block, width: 0, chars } });
       }
       if (end < lines.length) rows.push({ text: "", start: offsets[end], end: offsets[end] + lines[end].length, kind: 3 });
+      for (let n = block; n < rows.length; n++) rows[n].code = { block, width, chars: rows[n].code?.chars ?? Array.from(rows[n].text, char => ({ char, color: "#687782" })) };
       index = end; continue;
     }
     const header = cells(line), divider = cells(lines[index + 1] ?? "");
@@ -95,7 +95,7 @@ export function layout(source: string) {
         for (let band = 0; band < Math.max(...wrapped.map(parts => parts.length)); band++) {
           const content = wrapped.map(parts => parts[band] ?? "");
           rows.push({ text: content.join(" | "), start: offsets[sourceRow], end: offsets[sourceRow] + lines[sourceRow].length,
-            kind: 4, table: { widths, cells: content, header: heading } });
+            kind: 4, table: { widths, cells: content, header: heading, first: band === 0, last: band === Math.max(...wrapped.map(parts => parts.length)) - 1 } });
         }
       };
       emit(header, index, true); index += 1;
@@ -123,7 +123,7 @@ export function layout(source: string) {
 }
 
 /** One bounded coverage tile; table geometry travels separately as metadata. */
-export function raster(row: Row): string {
+export function raster(row: Row, xOffset = 0): string {
   ctx.clearRect(0, 0, TILE_W, TILE_H);
   ctx.fillStyle = "white"; ctx.font = font(row.kind); ctx.textBaseline = "alphabetic";
   if (row.table) {
@@ -133,7 +133,7 @@ export function raster(row: Row): string {
       ctx.save(); ctx.beginPath(); ctx.rect(x + 2, 0, row.table!.widths[column] - 4, TILE_H); ctx.clip();
       ctx.fillText(text, x + 4, 13); ctx.restore(); x += row.table!.widths[column];
     });
-  } else if (row.kind === 3) paintMono(row.text, 7, 2);
+  } else if (row.kind === 3) paintMono(row.text, 7, 2 - xOffset);
   else ctx.fillText(row.text, row.kind === 2 ? 8 : 2, 13);
   const rgba = ctx.getImageData(0, 0, TILE_W, TILE_H).data;
   const mask = Buffer.alloc(TILE_W * TILE_H / 4);
@@ -158,8 +158,13 @@ function paintMono(text: string, cellWidth: number, origin: number) {
   let x = origin;
   for (const char of text) {
     const width = cellWidth * (char.codePointAt(0)! > 255 ? 2 : 1);
-    ctx.save(); ctx.beginPath(); ctx.rect(x, 0, width, TILE_H); ctx.clip();
-    ctx.fillText(char, x, 13); ctx.restore(); x += width;
+    if (x + width > 0) { ctx.save(); ctx.beginPath(); ctx.rect(x, 0, width, TILE_H); ctx.clip();
+      ctx.fillText(char, x, 13); ctx.restore(); } x += width;
     if (x >= TILE_W) break;
   }
+}
+
+/** Palette follows the same clipped viewport as the coverage tile. */
+export function codeColors(row: Row, x = 0) {
+  return row.code ? columnColors(row.code.chars, TILE_W, x) : undefined;
 }
