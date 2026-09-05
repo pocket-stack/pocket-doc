@@ -1,4 +1,4 @@
 {
   "name": "pocket-folio", "version": "0.1.0", "private": true, "type": "module", "license": "MIT",
-  "scripts": { "3ds": "bun scripts/build.ts", "seed": "bun scripts/seed.ts", "host": "bun host/serve.ts", "test": "bun test --conditions=browser ./test/", "check": "bun run test" }
+  "scripts": { "3ds": "bun scripts/build.ts", "seed": "bun scripts/seed.ts", "host": "bun host/serve.ts", "test": "bun test --conditions=browser ./test/library.test.ts ./test/transport.test.ts ./test/editor.test.ts ./test/commands.test.ts ./test/layout.test.ts", "check": "bun run test" }
 }
