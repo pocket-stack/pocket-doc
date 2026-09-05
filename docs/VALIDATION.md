@@ -35,6 +35,9 @@ guest and the runtime Wasm artifact. Only the QA directory is replaced.
 ## Current deployment
 
 The whole-document revision is built and awaiting ftpd at 172.20.12.37:5000.
+Its production binary is **1,687,568 bytes**, SHA-256
+`5a51ac4fbdce29145e069972312cc101e3839e57ca7f29ce054ec691c61e7b29`.
+Application and framework PR checks pass.
 It has not yet been installed or physically accepted. The device receipts
 below describe earlier builds, including the user's accepted UX improvements.
 
