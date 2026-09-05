@@ -107,11 +107,13 @@ The changes reuse row slots cyclically, notify only the relevant row lane,
 use paint transforms for row positions and prefetch in the direction of actual
 movement, including circle-pad movement. These are **bounded-work and behavioral
 measurements on Mac**. They do not prove physical frame time or eliminate all
-possible JS, layout or GPU stalls. This revision still needs installation and
-physical scrolling / touch acceptance.
+possible JS, layout or GPU stalls. This revision still needs physical scrolling / touch acceptance.
 
 The revised native ARM capture completes and produces both screen readbacks;
 no startup exception is recorded. The production build excludes capture code,
 is **1,649,684 bytes**, and has SHA-256
 `b9df569877d74033f2bdc03e5b184bfe396e9890abf228de4d844f50aa27ce95`.
-Installation of this usability revision is pending ftpd availability.
+**This usability revision and its app-scoped pairing key are installed** at
+172.20.12.37:5000 with byte-exact FTP readback. The matching Mac provider is
+running and waiting for the device to relaunch. The local receipt is
+`dist/qa/deploy.json`; physical relaunch and interaction acceptance remain pending.
