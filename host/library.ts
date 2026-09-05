@@ -14,10 +14,10 @@ export class Library {
   private cache = new Map<number, { source: string; revision: string; rows: ReturnType<typeof layout>["rows"]; outline: ReturnType<typeof layout>["outline"] }>();
   constructor(root: string) {
     this.root = realpathSync(root);
-    mkdirSync(join(this.root, ".folio"), { recursive: true });
-    if (realpathSync(join(this.root, ".folio")) !== join(this.root, ".folio")) throw new Error("Index directory left the grant");
-    try { if (lstatSync(join(this.root, ".folio/index.sqlite")).isSymbolicLink()) throw new Error("Index must not be a symlink"); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
-    this.db = new Database(join(this.root, ".folio/index.sqlite"));
+    mkdirSync(join(this.root, ".doc"), { recursive: true });
+    if (realpathSync(join(this.root, ".doc")) !== join(this.root, ".doc")) throw new Error("Index directory left the grant");
+    try { if (lstatSync(join(this.root, ".doc/index.sqlite")).isSymbolicLink()) throw new Error("Index must not be a symlink"); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
+    this.db = new Database(join(this.root, ".doc/index.sqlite"));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=2000;
       CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY, name TEXT UNIQUE, title TEXT, bytes INTEGER, modified REAL);
       CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(title, body);
@@ -88,7 +88,7 @@ export class Library {
     if (d.revision !== revision) throw new Error("Revision changed; reopen document");
     integer(row, d.rows.length - 1);
     const r = d.rows[row];
-    return { row, kind: r.kind, start: r.start, mask: raster(r) };
+    return { row, kind: r.kind, start: r.start, mask: raster(r), ...(r.colors ? { colors: r.colors } : {}) };
   }
   window(id: number, revision: string, first: number) {
     const d = this.document(id);
@@ -124,10 +124,10 @@ export class Library {
     integer(p.start, source.length); integer(p.end, source.length);
     if (p.end < p.start || p.end - p.start > 384) throw new Error("Invalid edit range");
     const next = source.slice(0, p.start) + p.text + source.slice(p.end), revision = hash(next);
-    const stage = join(this.root, `.folio/${p.op}.pending`);
+    const stage = join(this.root, `.doc/${p.op}.pending`);
     const fd = openSync(stage, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
     try { writeFileSync(fd, next); fsyncSync(fd); } finally { closeSync(fd); }
-    const directory = openSync(join(this.root, ".folio"), "r"); try { fsyncSync(directory); } finally { closeSync(directory); }
+    const directory = openSync(join(this.root, ".doc"), "r"); try { fsyncSync(directory); } finally { closeSync(directory); }
     this.db.query("INSERT INTO saves VALUES(?,?,?,?,?,?,?)").run(p.op, p.id, p.revision, revision, stage, "prepared", fingerprint);
     this.recover();
     const state = this.db.query("SELECT state FROM saves WHERE op=?").get(p.op) as { state: string };

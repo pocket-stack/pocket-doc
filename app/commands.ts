@@ -1,41 +1,30 @@
 import { BTN } from "@pocketjs/framework/input";
-export type Bank = "library" | "document" | "selection" | "view";
-export type Action = "open" | "focus-list" | "search" | "refresh" | "edit" | "read" | "save" | "link" |
-  "select" | "copy" | "paste" | "discard" | "focus-document" | "top" | "heading" | "end";
-export const BANKS: Record<Bank, { title: string; side: "left" | "right"; actions: readonly { button: number; key: string; label: string; action: Action }[] }> = {
-  library: { title: "L  Library", side: "left", actions: [
-    { button: BTN.CIRCLE, key: "A", label: "Open selected", action: "open" },
-    { button: BTN.CROSS, key: "B", label: "Focus list", action: "focus-list" },
-    { button: BTN.TRIANGLE, key: "X", label: "Search", action: "search" },
-    { button: BTN.SQUARE, key: "Y", label: "Refresh list", action: "refresh" },
+export type Bank = "library" | "document";
+export type Action = "open" | "focus-list" | "search" | "refresh" | "clear-search" | "edit" | "read" | "save" | "link" |
+  "select" | "copy" | "paste" | "discard" | "focus-document" | "top" | "heading" | "previous-heading" | "end" | "undo" | "redo";
+export const BANKS: Record<Bank, { title: string; columns: number; actions: readonly { label: string; action: Action }[] }> = {
+  library: { title: "Files", columns: 1, actions: [
+    { label: "Open selected", action: "open" }, { label: "Search files", action: "search" },
+    { label: "Clear search", action: "clear-search" }, { label: "Refresh list", action: "refresh" },
+    { label: "Focus files", action: "focus-list" },
   ] },
-  document: { title: "R  Document", side: "right", actions: [
-    { button: BTN.CIRCLE, key: "A", label: "Edit / resume", action: "edit" },
-    { button: BTN.CROSS, key: "B", label: "Read / keep draft", action: "read" },
-    { button: BTN.TRIANGLE, key: "X", label: "Save draft", action: "save" },
-    { button: BTN.SQUARE, key: "Y", label: "Follow link", action: "link" },
-  ] },
-  selection: { title: "ZL  Selection", side: "left", actions: [
-    { button: BTN.CIRCLE, key: "A", label: "Drag selection", action: "select" },
-    { button: BTN.CROSS, key: "B", label: "Copy selection", action: "copy" },
-    { button: BTN.TRIANGLE, key: "X", label: "Paste", action: "paste" },
-    { button: BTN.SQUARE, key: "Y", label: "Discard draft...", action: "discard" },
-  ] },
-  view: { title: "ZR  Navigation", side: "right", actions: [
-    { button: BTN.CIRCLE, key: "A", label: "Focus document", action: "focus-document" },
-    { button: BTN.CROSS, key: "B", label: "Document start", action: "top" },
-    { button: BTN.TRIANGLE, key: "X", label: "Next heading", action: "heading" },
-    { button: BTN.SQUARE, key: "Y", label: "Document end", action: "end" },
+  document: { title: "Document", columns: 3, actions: [
+    { label: "Edit / resume", action: "edit" }, { label: "Read", action: "read" }, { label: "Save", action: "save" },
+    { label: "Undo", action: "undo" }, { label: "Redo", action: "redo" }, { label: "Select", action: "select" },
+    { label: "Prev heading", action: "previous-heading" }, { label: "Next heading", action: "heading" }, { label: "Follow link", action: "link" },
+    { label: "Copy", action: "copy" }, { label: "Paste", action: "paste" }, { label: "Discard...", action: "discard" },
   ] },
 };
 export function heldBank(buttons: number): Bank | undefined {
-  if (buttons & BTN.ZL || buttons & BTN.LTRIGGER && buttons & BTN.SELECT) return "selection";
-  if (buttons & BTN.ZR || buttons & BTN.RTRIGGER && buttons & BTN.SELECT) return "view";
   if (buttons & BTN.LTRIGGER) return "library";
   if (buttons & BTN.RTRIGGER) return "document";
 }
-export function chordAction(bank: Bank | undefined, pressed: number): Action | undefined {
-  return bank ? BANKS[bank].actions.find(item => pressed & item.button)?.action : undefined;
+/** Clamp within a row/column: sideways movement never wraps into another row. */
+export function moveCommand(bank: Bank, index: number, buttons: number): number {
+  const { columns, actions } = BANKS[bank], row = Math.floor(index / columns), col = index % columns;
+  const y = Math.max(0, Math.min(Math.ceil(actions.length / columns) - 1, row + (buttons & BTN.DOWN ? 1 : buttons & BTN.UP ? -1 : 0)));
+  const x = Math.max(0, Math.min(columns - 1, col + (buttons & BTN.RIGHT ? 1 : buttons & BTN.LEFT ? -1 : 0)));
+  return Math.min(actions.length - 1, y * columns + x);
 }
 /** An offscreen cursor enters at the first visible row before moving further. */
 export function moveListSelection(selected: number, direction: number, offset: number, extent: number, total: number, rowHeight = 24) {

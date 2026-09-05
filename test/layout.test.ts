@@ -47,3 +47,25 @@ test("source bands preserve UTF-16 selection positions and fit the narrow editor
     expect(row.text).not.toMatch(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/);
   }
 });
+
+
+test("fenced syntax retains multiline state, fixed cells, offsets and bounded color payloads", () => {
+  const code = "const value = 42; // comment\n/* begin\nend */ const text = \"hello\";\n\tconsole.log(text);\n";
+  const source = "~~~ts\n" + code + "~~~\n";
+  const rows = layout(source).rows.filter(r => r.colors);
+  expect(rows.length).toBeGreaterThan(3);
+  for (const row of rows) {
+    expect(row.colors!.columns.length).toBe(256);
+    expect(row.colors!.palette.length).toBeLessThanOrEqual(96);
+    expect(JSON.stringify({ mask: raster(row), colors: row.colors }).length).toBeLessThan(2500);
+    expect(row.start).toBeGreaterThanOrEqual(6);
+    expect(row.end).toBeLessThanOrEqual(source.length);
+  }
+  const first = rows[0];
+  expect(new Set(first.colors!.columns).size).toBeGreaterThan(2);
+  expect(rows.some(r => r.text.startsWith("    console"))).toBe(true);
+  const unknown = layout("```not-a-language\na | b\n```\n").rows.find(r => r.colors)!;
+  expect(unknown.text).toBe("a | b");
+  expect(unknown.table).toBeUndefined();
+  expect(layout("```python\nprint(42)").rows.some(r => r.text === "print(42)" && r.colors)).toBe(true);
+});

@@ -1,4 +1,4 @@
-# Pocket Folio
+# Pocket Doc
 
 - Framework code belongs in the PocketJS repository; update the runtime pin here.
 - Keep Mac IO, SQLite, layout and rasterization in the provider worker. Keep the

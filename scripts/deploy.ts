@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 const address = process.argv[2] ?? "172.20.12.37";
-const binary = "dist/pocketfolio-main.3dsx";
+const binary = "dist/pocketdoc-main.3dsx";
 const bytes = readFileSync(binary);
 if (bytes.includes(Buffer.from("pocketjs-captures"))) throw new Error("Refusing to deploy a capture binary; rebuild without --capture");
 mkdirSync(".local", { recursive: true });
@@ -17,12 +17,30 @@ for path in ['/pocketjs','/pocketjs/offload']:
     except ftplib.error_perm as error:
         if not str(error).startswith('550'): raise
 receipts=[]
-for local,remote in [('.local/pair.key','/pocketjs/offload/'+sys.argv[2]+'.key'),('dist/pocketfolio-main.3dsx','/3DS/pocketfolio-main.3dsx')]:
+for local,remote in [('.local/pair.key','/pocketjs/offload/'+sys.argv[2]+'.key'),('dist/pocketdoc-main.3dsx','/3DS/pocketdoc-main.3dsx')]:
     data=pathlib.Path(local).read_bytes()
     ftp.storbinary('STOR '+remote,io.BytesIO(data),blocksize=65536)
     result=io.BytesIO(); ftp.retrbinary('RETR '+remote,result.write)
     assert result.getvalue()==data, 'FTP readback mismatch'
     receipts.append({'path':remote,'bytes':len(data),'verified':True,**({'sha256':hashlib.sha256(data).hexdigest()} if local.endswith('.3dsx') else {})})
+# Complete the one-time launcher rename only after the new image verifies.
+# Archive the exact prior build; retain any unrecognized binary for inspection.
+old='/3DS/pocketfolio-main.3dsx'
+try:
+    previous=io.BytesIO(); ftp.retrbinary('RETR '+old,previous.write)
+except ftplib.error_perm as error:
+    if not str(error).startswith('550'): raise
+else:
+    digest=hashlib.sha256(previous.getvalue()).hexdigest()
+    expected='73d16cf762440e43fefd8824a249856f2ae9fbaaab9b1d958f57674e8b58243a'
+    if digest != expected: raise RuntimeError('Pocket Doc installed; previous launcher differs from the known build and was retained')
+    for directory in ['/pocketjs/migrations','/pocketjs/migrations/pocket-doc']:
+        try: ftp.mkd(directory)
+        except ftplib.error_perm as error:
+            if not str(error).startswith('550'): raise
+    archive='/pocketjs/migrations/pocket-doc/'+digest+'.3dsx'
+    ftp.rename(old,archive)
+    receipts.append({'migration':'previous launcher archived outside HBL','path':archive,'sha256':digest})
 ftp.quit(); print(json.dumps(receipts,indent=2))
 `;
 const result = Bun.spawnSync(["python3", "-c", program, address, slot], { stdout: "pipe", stderr: "pipe" });

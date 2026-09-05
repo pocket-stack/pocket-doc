@@ -3,11 +3,11 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync, symlinkSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { seed } from "../scripts/seed.ts";
+import { seed, specimen } from "../scripts/seed.ts";
 import { Library } from "../host/library.ts";
 import { layout, raster } from "../host/layout.ts";
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), "folio-test-")); seed(root, 3);
+  const root = mkdtempSync(join(tmpdir(), "doc-test-")); seed(root, 3);
   const library = new Library(root); library.index();
   return { root, library, close() { library.close(); rmSync(root, { recursive: true }); } };
 }
@@ -15,7 +15,7 @@ describe("Mac library", () => {
   test("pages and searches SQLite; layouts preserve source locations and Unicode tiles", () => {
     const f = fixture();
     try {
-      expect(f.library.list().total).toBe(3); expect(f.library.list("中文笔记").total).toBe(3);
+      expect(f.library.list().total).toBe(3); expect(f.library.list("中文").total).toBe(3);
       const doc = f.library.open(1); expect(doc.rows).toBeGreaterThan(1000);
       expect(f.library.tile(1, doc.revision, 0).mask.length).toBe(1368);
       expect(f.library.window(1, doc.revision, 0)).toHaveLength(12);
@@ -58,7 +58,7 @@ describe("Mac library", () => {
     const f = fixture();
     try {
       const document = f.library.open(1);
-      const path = join(f.root, "note-0001.md"), stage = join(f.root, ".folio/recovery.pending");
+      const path = join(f.root, "note-0001.md"), stage = join(f.root, ".doc/recovery.pending");
       const next = readFileSync(path, "utf8") + "\nRecovered edit\n";
       const revision = createHash("sha256").update(next).digest("hex");
       writeFileSync(stage, next);
@@ -72,4 +72,18 @@ describe("Mac library", () => {
       expect(readFileSync(path, "utf8")).toBe(next);
     } finally { f.close(); }
   });
+});
+
+
+test("representative corpus is reproducible, varied and never overwrites an existing document", () => {
+  const root = mkdtempSync(join(tmpdir(), "doc-corpus-"));
+  try {
+    const samples = Array.from({ length: 8 }, (_, i) => specimen(i + 1, 1000));
+    expect(new Set(samples.map(s => s.split("\n")[0])).size).toBe(8);
+    for (const sample of samples) expect(Buffer.byteLength(sample)).toBeGreaterThanOrEqual(112 * 1024);
+    expect(specimen(513, 1000)).toBe(specimen(513, 1000));
+    expect(samples[0]).toContain("```ts"); expect(samples[7]).toContain("```json");
+    seed(root, 2); const file = join(root, "note-0001.md"); writeFileSync(file, "My retained edit");
+    expect(seed(root, 2).created).toBe(0); expect(readFileSync(file, "utf8")).toBe("My retained edit");
+  } finally { rmSync(root, { recursive: true }); }
 });

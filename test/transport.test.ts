@@ -8,7 +8,7 @@ import { seed } from "../scripts/seed.ts";
 import { connectOffloadProvider } from "../runtime/tools/offload-provider.ts";
 import { OffloadDecoder, encodeOffloadRecord } from "../runtime/tools/offload-wire.ts";
 test("TCP framing drives the actual SQLite/layout worker with a pairing key", async () => {
-  const root = mkdtempSync(join(tmpdir(), "folio-wire-")); seed(root, 2);
+  const root = mkdtempSync(join(tmpdir(), "doc-wire-")); seed(root, 2);
   const key = randomBytes(32).toString("hex");
   let received = 0;
   let resolveResult!: (value: any) => void;

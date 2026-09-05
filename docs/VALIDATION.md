@@ -6,13 +6,13 @@ from Git; `bun run seed` recreates the fixture without overwriting existing file
 
 ## Automated checks
 
-- Fourteen application tests pass: SQLite paging/search, Unicode coverage, source
+- Seventeen application tests pass: SQLite paging/search, Unicode coverage, source
   ranges, atomic saves, operation identity, restart recovery, external-edit
   conflicts, path confinement, real TCP-to-Worker dispatch, table wrapping and
   source offsets, shoulder command banks, viewport selection and caret boundaries.
 - TypeScript and the production guest build pass against the pinned runtime.
 - The native ARM build produces a production `.3dsx`.
-- The compiled guest Wasm simulation runs **1,180 frames and 42 behavioral checks**
+- The compiled guest Wasm simulation runs **1,423 frames and 58 behavioral checks**
   against the full library, with replies delayed four frames. It exercises
   actual auxiliary touch hit facts for both pads, keyboard, held-space caret movement and selection;
   verifies shoulder menus do not jump or leak ordinary A/B actions; and checks
@@ -150,3 +150,48 @@ exception. The production binary is **1,658,228 bytes**, SHA-256
 been restarted with the source cell-width rules above. The local receipt is
 `dist/qa/deploy.json`; physical relaunch and interaction acceptance of this
 revision remain pending.
+
+
+## Pocket Doc, command panels and syntax colors
+
+The application, manifest ID, output names, assets, host index directory and
+repository are renamed to Pocket Doc. The generated fixture now lives in
+`data/library-v2/`; the previous directory is retained. A deterministic generator
+creates 1,000 original documents in eight scenarios, with a minimum of 114,690
+bytes, a maximum of 1,049,446 bytes and a total of 157,277,771 bytes. Generated
+Markdown and databases are ignored by Git. Seeding preserves existing edits.
+
+L opens a centered file list; R opens a three-column document-command panel.
+Direction keys select commands, A confirms and B or shoulder release dismisses.
+Undo/Redo operate on at most 32 local excerpt snapshots. Select is disabled in
+reading mode, and Read clears selection. Shift distinguishes one-shot and locked
+capitalization. The framework ClassicSheet retains touch and hardware modality
+through its native closing animation and uses a 4px action gap.
+
+Shiki runs in the provider worker, preserving multiline syntax state. Code bands
+use fixed 7px cells, tab stops and two cells for wide glyphs. Unknown languages
+remain plain monospace. Each row retains its source offsets, 1,024-byte coverage
+mask and one texture handle. Optional palette columns stay below the unchanged
+2,500-character reply limit; native coloring uses the existing scratch buffer
+and one upload credit per frame.
+
+All 17 application tests, TypeScript and the production guest build pass.
+The 1,423-frame compiled-guest replay passes 58 checks with four-frame latency,
+including directional commands, disabled Read-mode Select, offline undo/redo,
+Shift one-shot/lock behavior, animated modal transitions and highlighted text.
+The 3DS QuickJS check executes 616 frames at a stricter 128 KiB stack. Framework
+renderer and offload tests pass (61 tests), including ASan/UBSan palette decoding
+and modal close/reopen lifetime. The contract and TypeScript checks pass.
+
+The continuous circle-pad replay on the new, more varied corpus records 1,773
+UI mutations over 360 frames (888 down / 885 up, peak 57), with constant settled
+motion and the same four-request / 72-resource bounds. This corpus differs from
+the older 1,540-call result. **These are Mac behavioral measurements, not physical
+frame-time results.**
+
+The native ARM capture produces both screen readbacks and its completion marker,
+with no startup exception. The 3DS stack remains 192 KiB. The production build
+uses runtime `d7826c29` and contains no capture code.
+It is **1,668,520 bytes**, SHA-256
+`5fbf92b5eee9d91919af1f0eb759c064eb02a640249f8ce386f403feff1e8356`.
+Installation and physical interaction acceptance are pending.

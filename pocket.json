@@ -1,8 +1,8 @@
 {
   "pocket": 2,
-  "id": "dev.pocket-stack.folio",
-  "name": "pocket-folio",
-  "title": "Pocket Folio",
+  "id": "dev.pocket-stack.doc",
+  "name": "pocket-doc",
+  "title": "Pocket Doc",
   "version": "0.1.0",
   "engine": {
     "capabilities": {
@@ -20,7 +20,7 @@
   },
   "app": {
     "entry": "app/main.tsx",
-    "output": "pocketfolio-main",
+    "output": "pocketdoc-main",
     "framework": "solid",
     "viewport": {
       "fixed": {

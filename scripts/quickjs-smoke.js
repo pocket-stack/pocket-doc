@@ -7,7 +7,7 @@ const mask = "A".repeat(1366) + "==";
 const document = {id:1, title:"Stack smoke", revision:"revision-1", layout:"layout-1", rows:1000,
   chars:10000, mini:[10,20], outline:[], links:[]};
 globalThis.ui = {__host:"3ds-dev", __hostAbi:8, __viewport:{w:400,h:240},
-  __auxiliarySurface:{root:2,w:320,h:240}, __textures:{"shift.svg":0,"folio-book.svg":1}, __sprites:{},
+  __auxiliarySurface:{root:2,w:320,h:240}, __textures:{"shift.svg":0,"shift-lock.svg":2,"doc-book.svg":1}, __sprites:{},
   createNode:() => node++, measureText:text => text.length * 7};
 for (const name of ["destroyNode","insertBefore","removeChild","setStyle","setProp","setPropBatch",
   "setText","replaceText","uploadTexture","setImage","setSprite","animate","cancelAnim","setFocus",
@@ -40,8 +40,8 @@ function frames(n, buttons=0, analog=0x8080) {
 }
 function check(condition, message) { if (!condition) throw new Error(message); }
 try {
-  std.loadScript(scriptArgs[1] || "runtime/dist/3ds/guest/pocketfolio-main.js");
-  const s = globalThis.__folio;
+  std.loadScript(scriptArgs[1] || "runtime/dist/3ds/guest/pocketdoc-main.js");
+  const s = globalThis.__doc;
   frames(60); check(s.mode()==="read", "offline mount failed");
   session=1; frames(100); s.setFocus("document"); frames(60,0,0x80ff); frames(60,0,0x8000);
   check(s.total()===1000 && s.tiles.size>=24, "resource reveal failed");
@@ -56,7 +56,7 @@ try {
   check(s.dirty() && s.textTiles.size>0, "Unicode source resource failed");
   const draft=s.draft().text; session=-1; frames(20);
   s.perform("discard"); frames(1); check(s.confirmDiscard(), "discard sheet missing");
-  s.cancelDiscard(); frames(1); check(s.draft().text===draft, "cancel discarded the draft");
+  s.cancelDiscard(); frames(14); check(s.draft().text===draft, "cancel discarded the draft");
   check(s.draft().text===draft, "offline draft lost");
   std.puts(JSON.stringify({ok:true,frames:ticks,nativeNodeIds:node,uploadedTextures:texture,
     checks:["offline mount","continuous stick scrolling","table reveal","error fallback","retry","editor","Unicode resource","discard cancellation","offline draft"]})+"\n");

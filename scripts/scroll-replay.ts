@@ -3,8 +3,8 @@ import { createWasmUi } from "../runtime/hosts/web/wasm-ops.js";
 import { NODE_TYPE, PROP, ENUMS, BTN } from "../runtime/contracts/spec/spec.ts";
 import { Library } from "../host/library.ts";
 import { dispatchOffload } from "../runtime/tools/offload-provider.ts";
-import type { Folio } from "../app/store.ts";
-const library = new Library("data/library"); library.index();
+import type { Doc } from "../app/store.ts";
+const library = new Library("data/library-v2"); library.index();
 const wasm = await createWasmUi(await Bun.file("runtime/hosts/web/pocketjs.wasm").arrayBuffer(), { width: 400, height: 480 });
 const ops = wasm.ops;
 let calls: Record<string, number> = {};
@@ -22,14 +22,14 @@ ops.__auxiliarySurface = { root: auxiliary, w: 320, h: 240 };
 const requests: string[] = [], replies: { at: number; raw: string; tile: boolean }[] = [];
 let tick = 0, connected = -1, withholdTiles = false, maxPending = 0, maxTiles = 0, maxSlots = 0;
 Object.assign(globalThis, {
-  ui: ops, __pak: await Bun.file("runtime/dist/3ds/guest/pocketfolio-main.pak").arrayBuffer(), __simHz: 60,
+  ui: ops, __pak: await Bun.file("runtime/dist/3ds/guest/pocketdoc-main.pak").arrayBuffer(), __simHz: 60,
   offload: {
     session: () => connected, submit: (raw: string) => { requests.push(raw); return true; },
     take: () => { const i = replies.findIndex(reply => reply.at <= tick && !(withholdTiles && reply.tile)); return i < 0 ? undefined : replies.splice(i, 1)[0].raw; },
   },
 });
-(0, eval)(await Bun.file("runtime/dist/3ds/guest/pocketfolio-main.js").text());
-const s = (globalThis as any).__folio as Folio;
+(0, eval)(await Bun.file("runtime/dist/3ds/guest/pocketdoc-main.js").text());
+const s = (globalThis as any).__doc as Doc;
 let hit: number | undefined;
 async function frames(n: number, buttons = 0, touch?: [number, number], analog = 0x8080) {
   if (touch && hit === undefined) { wasm.render(); hit = ops.hitTestBounds!(touch[0] + 40, touch[1] + 240); }

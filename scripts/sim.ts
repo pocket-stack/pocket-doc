@@ -5,8 +5,9 @@ import { encodePNG } from "../runtime/tests/png.ts";
 import { Library } from "../host/library.ts";
 import { layout } from "../host/layout.ts";
 import { dispatchOffload } from "../runtime/tools/offload-provider.ts";
-import type { Folio } from "../app/store.ts";
-const library = new Library("data/library"); library.index();
+import { BANKS, type Action, type Bank } from "../app/commands.ts";
+import type { Doc } from "../app/store.ts";
+const library = new Library("data/library-v2"); library.index();
 const wasm = await createWasmUi(await Bun.file("runtime/hosts/web/pocketjs.wasm").arrayBuffer(), { width: 400, height: 480 });
 const ops = wasm.ops;
 const painted = new Map<number, Map<number, number>>();
@@ -28,14 +29,14 @@ let tick = 0, connected = -1, withholdTiles = false, maxPending = 0, maxTiles = 
 const checks: string[] = [];
 function check(condition: unknown, message: string) { if (!condition) throw new Error(message); checks.push(message); }
 Object.assign(globalThis, {
-  ui: ops, __pak: await Bun.file("runtime/dist/3ds/guest/pocketfolio-main.pak").arrayBuffer(), __simHz: 60,
+  ui: ops, __pak: await Bun.file("runtime/dist/3ds/guest/pocketdoc-main.pak").arrayBuffer(), __simHz: 60,
   offload: {
     session: () => connected, submit: (raw: string) => { requests.push(raw); return true; },
     take: () => { const i = replies.findIndex(reply => reply.at <= tick && !(withholdTiles && reply.tile)); return i < 0 ? undefined : replies.splice(i, 1)[0].raw; },
   },
 });
-(0, eval)(await Bun.file("runtime/dist/3ds/guest/pocketfolio-main.js").text());
-const s = (globalThis as any).__folio as Folio;
+(0, eval)(await Bun.file("runtime/dist/3ds/guest/pocketdoc-main.js").text());
+const s = (globalThis as any).__doc as Doc;
 let hit: number | undefined;
 async function frames(n: number, buttons = 0, touch?: [number, number], analog = 0x8080) {
   if (touch && hit === undefined) { wasm.render(); hit = ops.hitTestBounds!(touch[0] + 40, touch[1] + 240); }
@@ -55,6 +56,14 @@ async function frames(n: number, buttons = 0, touch?: [number, number], analog =
 }
 async function tap(x: number, y: number) { await frames(1, 0, [x,y]); await frames(1); }
 async function press(button: number) { await frames(1, button); await frames(1); }
+async function command(bank: Bank, action: Action) {
+  const shoulder = bank === "library" ? BTN.LTRIGGER : BTN.RTRIGGER;
+  const panel = BANKS[bank], index = panel.actions.findIndex(item => item.action === action);
+  await frames(1, shoulder);
+  for (let i = 0; i < Math.floor(index / panel.columns); i++) { await frames(1, shoulder | BTN.DOWN); await frames(1, shoulder); }
+  for (let i = 0; i < index % panel.columns; i++) { await frames(1, shoulder | BTN.RIGHT); await frames(1, shoulder); }
+  await frames(1, shoulder | BTN.CIRCLE); await frames(1);
+}
 mkdirSync("dist/qa", { recursive: true });
 async function shot(name: string) {
   const rgba = wasm.render().slice(); await Bun.write(`dist/qa/${name}.png`, encodePNG(rgba, 400, 480)); return rgba;
@@ -71,6 +80,17 @@ check(s.menu() === "library" && s.scroll.offset() === original, "Holding L opens
 await frames(1); await frames(1, BTN.RTRIGGER); await shot("menu-document");
 check(s.menu() === "document" && s.scroll.offset() === original, "Holding R opens its menu without jumping");
 await frames(1);
+const focusBeforeMenu = s.focus(), fileBeforeMenu = s.selected();
+await frames(1, BTN.RTRIGGER); await frames(1, BTN.RTRIGGER | BTN.DOWN); await frames(1, BTN.RTRIGGER | BTN.RIGHT);
+check(s.commandIndex() === 4 && s.focus() === focusBeforeMenu && s.selected() === fileBeforeMenu && s.scroll.offset() === original,
+  "R directions move only the two-dimensional command selection");
+await frames(1, BTN.RTRIGGER | BTN.CROSS); await frames(1, BTN.RTRIGGER);
+check(!s.menu(), "B dismisses the panel until its shoulder is released"); await frames(1);
+await frames(1, BTN.ZL | BTN.ZR); check(!s.menu(), "ZL/ZR no longer open command banks"); await frames(1);
+const codeRow = layout(readFileSync("data/library-v2/note-0001.md", "utf8")).rows.findIndex(row => !!row.colors);
+s.jump(codeRow * 20 / (s.doc()!.rows * 20 - 194), "document"); await frames(100); await shot("syntax-code");
+check(s.tiles.has(codeRow), "Highlighted code streams through the bounded resource cache");
+s.jump(0, "document"); await frames(30);
 
 s.jump(0.4, "library"); await frames(40);
 const listJump = s.libraryScroll.offset();
@@ -89,7 +109,7 @@ check(after > before + 100 && s.libraryScroll.offset() === 0, "Right touchpad in
 await shot("offline-scroll");
 connected = 2; await frames(120); s.scroll.stop();
 
-const tableRow = layout(readFileSync("data/library/note-0001.md", "utf8")).rows.findIndex((row, i) => i > 120 && row.table?.header);
+const tableRow = layout(readFileSync("data/library-v2/note-0001.md", "utf8")).rows.findIndex((row, i) => i > 120 && row.table?.header);
 check(tableRow > 120, "Fixture contains a table outside the initial prefetch window");
 withholdTiles = true;
 s.jump(tableRow * 20 / ((s.doc()!.rows * 20) - 194), "document"); await frames(20);
@@ -99,8 +119,8 @@ withholdTiles = false; await frames(110); await shot("table");
 check(s.rowResource(tableRow).status === "ready" && s.scroll.offset() === tableOffset, "Table image replaces fallback without moving its viewport");
 
 s.jump(0, "document"); await frames(100);
-await press(BTN.RTRIGGER | BTN.CIRCLE); await frames(35);
-check(s.mode() === "edit" && s.caret() === 0, "R+A opens editor once and does not also insert a newline");
+await command("document", "edit"); await frames(35);
+check(s.mode() === "edit" && s.caret() === 0, "R menu confirms Edit once and does not also insert a newline");
 await tap(55, 44); // w, via actual auxiliary touch hit facts
 check(s.dirty() && s.draft()?.text.startsWith("w"), "Touch keyboard updates the draft immediately");
 const beforeSpace = s.draft()!.text;
@@ -114,14 +134,14 @@ check(s.draft()!.text === beforeDrag && s.caret() > caretBeforeDrag && !s.caretD
 await tap(183, 219);
 await frames(23, 0, [181, 121]); await frames(1, 0, [205, 121]); await frames(1);
 check(s.selecting() && s.selection()[1] > s.selection()[0], "Select and held-space drag create a source selection");
-await frames(1, BTN.ZL); await shot("selection"); await frames(1); await shot("selection-open");
+await frames(1, BTN.RTRIGGER); await shot("selection"); await frames(1); await shot("selection-open");
 const selection = s.draft()!.text.slice(...s.selection());
-await press(BTN.ZL | BTN.CROSS); // copy; no backspace leak
+await command("document", "copy"); // no backspace leak
 const copiedSource = s.draft()!.text;
-check(copiedSource.includes(selection), "ZL+B copies without invoking the plain B delete action");
+check(copiedSource.includes(selection), "R menu copies without invoking the plain B delete action");
 s.toggleSelect(); s.moveCaret(s.draft()!.text.length);
-await press(BTN.ZL | BTN.TRIANGLE);
-check(s.draft()!.text.endsWith(selection), "ZL+X pastes the selected text locally");
+await command("document", "paste");
+check(s.draft()!.text.endsWith(selection), "R menu pastes the selected text locally");
 s.moveCaret(-s.caret());
 await frames(1); check(s.caretVisible(), "Caret is visible immediately after movement");
 await shot("caret-visible"); await frames(30); check(!s.caretVisible(), "Caret hides after its half-second visible phase");
@@ -133,17 +153,21 @@ const editorCaret = s.caret();
 await frames(1, 0, [230, 193]); await frames(1, 0, [230, 177]); await frames(1);
 check(s.editorScroll.offset() > 0 && s.caret() === editorCaret, "Editor pad scrolls the excerpt without moving its caret");
 s.editorScroll.stop(); s.moveCaret(-s.caret()); await frames(1); await shot("edit");
+if (!s.selecting()) s.toggleSelect();
 const beforeRead = s.draft()!.text;
 await tap(40, 13);
 check(s.mode() === "read" && s.draft()!.text === beforeRead && s.dirty(), "Visible Read button exits editing and retains the local draft");
+check(!s.selecting(), "Read clears source selection state");
+await tap(170, 219); check(s.mode() === "read" && !s.selecting(), "Select is disabled in reading mode");
 await shot("retained-draft"); await tap(268, 219);
 check(s.mode() === "edit" && s.draft()!.text === beforeRead, "Resume touch button returns to the retained draft");
 const retained = s.draft()!.text; connected = -2; await frames(20);
 check(s.dirty() && s.draft()?.text === retained, "Disconnect preserves the unsaved draft");
-await press(BTN.LTRIGGER | BTN.SELECT);
-await frames(1, BTN.LTRIGGER | BTN.SELECT);
-check(s.menu() === "selection", "L+SELECT reaches the selection bank on older 3DS hardware");
-await frames(1);
+const editBeforeUndo = s.draft()!.text;
+await command("document", "undo"); const undone = s.draft()!.text;
+check(undone !== editBeforeUndo, "Undo restores a local excerpt while offline");
+await command("document", "redo");
+check(s.draft()!.text === editBeforeUndo, "Redo restores the edit without waiting for Mac");
 // Every editor action uses the same pressed palette and release-inside policy.
 const idleButton = await shot("button-idle");
 await frames(1, 0, [105, 14]); const downButton = await shot("button-down");
@@ -151,13 +175,18 @@ check(!s.confirmDiscard() && Buffer.compare(idleButton, downButton) !== 0, "Disc
 await frames(1, 0, [105, 45]); await frames(1);
 check(!s.confirmDiscard(), "Sliding out of a toolbar button cancels activation");
 await tap(105, 14); check(s.confirmDiscard(), "Visible Discard opens a confirmation sheet");
-await shot("discard-sheet");
+const rising = await shot("discard-rising"); await frames(16);
+check(Buffer.compare(rising, await shot("discard-sheet")) !== 0, "Discard rises through native animation");
 const kept = s.draft()!.text;
 await tap(55, 44); await press(BTN.RIGHT);
 check(s.draft()!.text === kept && s.confirmDiscard(), "Discard sheet blocks the underlying keyboard and navigation");
 await tap(160, 208);
 check(!s.confirmDiscard() && s.draft()!.text === kept, "Keep Editing cancels discard without changing the draft");
-await tap(105, 14); await tap(160, 159);
+check(s.sheetModal(), "Closing sheet retains modality until its animation completes");
+await tap(55, 44); check(s.draft()!.text === kept, "Closing sheet blocks keyboard contacts");
+await shot("discard-falling"); await frames(14);
+check(!s.sheetModal(), "Closing animation releases the input block");
+await tap(105, 14); await frames(16); await tap(160, 159); await frames(14);
 check(!s.draft() && !s.dirty() && s.mode() === "read", "Confirmed discard clears only the local draft even while offline");
 
 connected = 3; await frames(50); s.setSelected(512); s.libraryScroll.scrollTo(512 * 24, { immediate: true }); s.setFocus("library"); await frames(50); s.activate(); await frames(100); s.edit(); await frames(40);
@@ -172,7 +201,15 @@ await shot("note-513-before"); await tap(181, 121);
 check(s.draft()!.text === original513.slice(0, phrase + 7) + " " + original513.slice(phrase + 7) && s.caret() === phrase + 8,
   "Note 513 inserts space exactly after This is and advances the caret once");
 await shot("note-513-after");
-check(readFileSync("data/library/note-0513.md", "utf8").includes("This is document 513"), "Caret and discard replay do not modify note 513 on Mac");
+check(readFileSync("data/library-v2/note-0513.md", "utf8").includes("This is document 513"), "Caret and discard replay do not modify note 513 on Mac");
+const atShift = s.caret();
+await tap(20, 96); check(s.shift() === "once", "One Shift tap arms one uppercase character");
+await tap(55, 44); await tap(55, 44);
+check(s.draft()!.text.slice(atShift, atShift + 2) === "Ww" && s.shift() === "off", "Single Shift resets after one character");
+await tap(20, 96); await tap(20, 96); check(s.shift() === "locked", "A double Shift tap locks capitalization");
+await shot("shift-locked"); const lockedAt = s.caret(); await tap(55, 44); await tap(55, 44);
+check(s.draft()!.text.slice(lockedAt, lockedAt + 2) === "WW" && s.shift() === "locked", "Locked Shift survives repeated typing");
+await tap(20, 96); check(s.shift() === "off", "Tapping locked Shift releases it");
 check(maxPending <= 4 && maxTiles <= 72 && maxSlots <= 72, "Pending requests and document resource caches stay bounded throughout navigation");
 const evidence = { frames: tick, simulatedLatencyFrames: 4, checks, inertiaBefore: before, inertiaAfter: after, maxPending, maxTiles, maxSlots,
   ...s.diagnostics(), note: "Compiled guest + Wasm replay on Mac. No hardware performance claim. No saves performed in real test library." };

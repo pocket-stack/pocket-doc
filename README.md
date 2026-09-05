@@ -1,14 +1,19 @@
-# Pocket Folio
+# Pocket Doc
 
 A Markdown library and source editor for the Nintendo 3DS, backed by a paired
 Mac. The Mac owns files, SQLite full-text search and text layout. The 3DS owns
 the two-screen interface, scrolling momentum, selection and the current draft.
 
-The test library contains **1,000 files, each at least 114,722 bytes**, totalling
-114,872,771 bytes before edits. Only bounded pages and visible text rows cross
-the network.
+The generated test library contains **1,000 files**, from **114,690 bytes** to
+**1,049,446 bytes**, totalling **157,277,771 bytes**. Eight original synthetic
+scenarios cover API handbooks, SQL cookbooks, design decisions, experiments,
+meetings, recovery runbooks, interface guides and multilingual journals. Ten
+files are approximately 1 MiB. `bun run seed` deterministically generates them
+under the ignored `data/library-v2/` directory and never overwrites existing
+files. The earlier `data/library/` fixture can remain beside it. Only bounded
+pages and visible rows cross the network.
 
-<img src="docs/read.png" width="400" alt="Pocket Folio reader and bottom-screen navigation" />
+<img src="docs/read.png" width="400" alt="Pocket Doc reader and bottom-screen navigation" />
 <img src="docs/edit.png" width="400" alt="Source editing with keyboard and trackpad together" />
 
 ## Run
@@ -18,8 +23,8 @@ Use the 3DS build prerequisites described by the pinned runtime's
 The initial implementation is on `feat/markdown-library` while its PR is Draft.
 
 ```sh
-git clone --branch feat/markdown-library --recursive https://github.com/pocket-stack/pocket-folio.git
-cd pocket-folio
+git clone --branch feat/markdown-library --recursive https://github.com/pocket-stack/pocket-doc.git
+cd pocket-doc
 bun install --cwd runtime --frozen-lockfile
 bun scripts/setup.ts
 bun run seed
@@ -29,7 +34,7 @@ bun scripts/deploy.ts <3ds-ip>
 bun run host <3ds-ip>
 ```
 
-Exit ftpd and launch Pocket Folio from HBL. `scripts/deploy.ts` transfers the
+Exit ftpd and launch Pocket Doc from HBL. `scripts/deploy.ts` transfers the
 app-specific pairing key and `.3dsx`, then reads both back byte-for-byte. Keys,
 generated documents, SQLite, build products and logs are ignored by Git.
 
@@ -41,26 +46,22 @@ generated documents, SQLite, build products and logs are ignored by Git.
 | Library | Left touchpad/circle pad scrolls; tapping focuses Files; A opens; SELECT searches |
 | Reader | Right touchpad scrolls/flings; tapping focuses Document; d-pad/circle pad scrolls |
 | Editor | Hold SPACE for 350 ms, then drag to move caret; short tap inserts space; arrows also move caret |
-| Editor | Right pad scrolls source; SELECT arms selection with held-space dragging; COPY copies it |
+| Editor | Right pad scrolls source; the Select touch button arms selection with held-space dragging; COPY copies it |
 | Editor | Top Read returns to reading and retains the draft; Save / START saves; Resume reopens it |
 | Editor | Discard opens a sheet; Keep Editing / B cancels; Discard Changes / A confirms |
 | Host | L+R+START returns to Homebrew Launcher |
 
-Holding a shoulder opens its menu on the corresponding side of the upper
-screen. Labels and dispatch use the **same command table**. The shoulder itself
-does not move either viewport. During editing, hold a shoulder with left/right
-to switch pane focus; plain left/right moves the caret.
+Hold **L** for a centered file-command list: Open, Search, Clear search,
+Refresh and Focus files. Up/down chooses an item; A runs it. Hold **R** for a
+centered three-column document panel: Edit, Read, Save; Undo, Redo, Select;
+Previous heading, Next heading, Follow link; Copy, Paste, Discard. All four
+directions navigate this grid. Unavailable commands are dimmed. B cancels;
+releasing the shoulder closes the panel. After confirmation, the same held
+shoulder must be released before its panel can open again. Menu navigation
+leaves pane focus, scrolling and source text unchanged. ZL/ZR have no app commands.
 
-| Hold | A | B | X | Y |
-| --- | --- | --- | --- | --- |
-| L | Open selected | Focus list | Search | Refresh list |
-| R | Edit / resume | Read / retain draft | Save | Follow first wiki link |
-| ZL | Toggle selection | Copy | Paste | Discard, then confirm |
-| ZR | Focus document | Document start | Next heading | Document end |
-
-On a model without ZL/ZR, use **L+SELECT / R+SELECT** for those banks. After
-touch or circle-pad scrolling leaves the selected file offscreen, the next
-up/down press selects the first visible file. Further presses move normally.
+After touch or circle-pad scrolling leaves the selected file offscreen, the
+next up/down press selects the first visible file. Further presses move normally.
 
 The 3DS panel supports one contact. All controls work with one stylus contact;
 typing and relative caret movement share the same screen without hiding the
@@ -78,13 +79,16 @@ Buttons, keycaps, panel rims and selected rows use the shared
 activates on release inside, and cancels when the contact slides outside, the
 button becomes disabled or a modal blocks its gesture. Select and Copy form
 adjacent toolbar actions with one shared border; Select retains the blue state
-while selection is active. File selection uses the same blue gradient with
+while selection is active in the editor. Read clears this state; Select is
+disabled in reading mode, and Edit/Resume is the explicit entry to source mode. File selection uses the same blue gradient with
 white labels. Panel fills are inset so their header cannot cover the rounded rim.
 
 The bevels and action-sheet arrangement reference Apple's archived
 [iOS 6 controls](https://developer.apple.com/library/archive/documentation/UserExperience/Conceptual/TransitionGuide/Controls.html)
 and [temporary views](https://developer.apple.com/library/archive/documentation/UserExperience/Conceptual/TransitionGuide/TempViews.html).
-Discard presents a separate red confirmation action and a Keep Editing button.
+The framework `ClassicSheet` presents the red confirmation and Keep Editing
+buttons with a 4px gap. Its native slide/fade animations take 220ms to open and
+180ms to close. Touch and hardware input remain blocked through closing.
 Confirming drops the local draft without saving or changing the Mac document.
 
 Source geometry uses the baked font's **measured 7px advance**, rather than its
@@ -93,6 +97,30 @@ travels with source-tile requests; the Mac places and clips fallback glyphs to
 the same grid, with two cells for wide characters. The editor still wraps at
 30 cells. This fixes the visible caret drift that made `This is|` appear to
 insert before the final `s` even though the underlying UTF-16 insertion was local.
+
+Shift has three states: off, one uppercase character, and caps lock. Two taps
+within 350ms enable caps lock, shown by a second bar below the arrow. One tap
+on the locked key unlocks it. Undo and Redo keep at most 32 local excerpt
+snapshots; new input drops the redo branch, and save/discard/new-document loads
+clear the history. Both operations work while offline.
+
+## Code blocks
+
+The Mac worker uses a retained [Shiki highlighter](https://shiki.style/guide/install)
+with the GitHub Light theme. Supported grammars include TypeScript, JavaScript,
+JSON, Python, Bash, SQL, Rust, C/C++, CSS, HTML, YAML and diff. Backtick and tilde
+fences preserve multiline grammar state; unknown languages retain a plain
+monospace fallback. Tabs advance to four-cell stops. Long lines wrap within
+the document pane on a 7px fixed grid, with two cells for wide characters.
+
+Coverage is unchanged at 1,024 bytes per row. Highlighted rows additionally
+send 256 palette indices and at most sixteen RGB colors, within the existing
+2,500-character reply limit. The framework colors the coverage in native code
+using the same scratch buffer and one texture upload per frame. No grammar,
+syntax tokens or HTML enter the handheld runtime.
+
+<img src="docs/code.png" width="400" alt="Monospace TypeScript with streamed syntax colors" />
+<img src="docs/commands.png" width="400" alt="Centered directional document commands" />
 
 ## Ownership and bounds
 
@@ -182,7 +210,7 @@ qjs --std --stack-size 131072 scripts/quickjs-smoke.js
 ```
 
 The simulator writes images and behavioral/caching evidence under `dist/qa`.
-It replays button chords and auxiliary touch hit facts with delayed provider
+It replays directional command panels and auxiliary touch hit facts with delayed provider
 replies. **Mac simulation is not a 3DS performance result.** Native worker telemetry is written by
 the running provider; installation readback, native rendering, live IO and
 physical touch acceptance are separate receipts.

@@ -1,21 +1,19 @@
 import { expect, test } from "bun:test";
 import { BTN } from "@pocketjs/framework/input";
-import { BANKS, chordAction, heldBank, moveListSelection } from "../app/commands.ts";
+import { BANKS, heldBank, moveCommand, moveListSelection } from "../app/commands.ts";
 
-test("four shoulder banks share their displayed and dispatched actions", () => {
-  const shoulders = [BTN.LTRIGGER, BTN.RTRIGGER, BTN.ZL, BTN.ZR];
-  const actions = new Set<string>();
-  for (const button of shoulders) {
-    const bank = heldBank(button)!;
-    expect(chordAction(bank, button)).toBeUndefined();
-    for (const item of BANKS[bank].actions) {
-      expect(chordAction(bank, item.button)).toBe(item.action); actions.add(item.action);
-    }
-  }
-  expect(actions.size).toBe(16);
-  expect(heldBank(BTN.LTRIGGER | BTN.SELECT)).toBe("selection");
-  expect(heldBank(BTN.RTRIGGER | BTN.SELECT)).toBe("view");
-  expect(chordAction(undefined, BTN.CIRCLE)).toBeUndefined();
+test("only L/R open menus and direction movement stays in its command grid", () => {
+  expect(heldBank(BTN.LTRIGGER)).toBe("library");
+  expect(heldBank(BTN.RTRIGGER)).toBe("document");
+  expect(heldBank(BTN.ZL | BTN.ZR)).toBeUndefined();
+  expect(moveCommand("library", 0, BTN.DOWN)).toBe(1);
+  expect(moveCommand("library", 0, BTN.RIGHT)).toBe(0);
+  expect(moveCommand("document", 2, BTN.RIGHT)).toBe(2);
+  expect(moveCommand("document", 2, BTN.DOWN)).toBe(5);
+  expect(moveCommand("document", 5, BTN.LEFT)).toBe(4);
+  expect(moveCommand("document", 11, BTN.DOWN)).toBe(11);
+  expect(BANKS.document.actions[3].action).toBe("undo");
+  expect(BANKS.document.actions[4].action).toBe("redo");
 });
 
 test("offscreen selection enters the current viewport before applying further movement", () => {

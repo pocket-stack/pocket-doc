@@ -1,3 +1,4 @@
+import { createEditHistory } from "../app/history.ts";
 import { expect, test } from "bun:test";
 import { moveSourceCaret, sourceWindow } from "../app/editor.ts";
 import { slotRow, ROW_SLOTS } from "../app/window.ts";
@@ -25,4 +26,18 @@ test("crossing one row reassigns only one of the fixed display slots", () => {
     expect(after.filter((row, slot) => row !== before[slot])).toHaveLength(1);
     expect([...after].sort((a, b) => a - b)).toEqual(Array.from({ length: ROW_SLOTS }, (_, n) => first + 1 + n));
   }
+});
+
+
+test("undo/redo retain bounded excerpt snapshots and discard an abandoned future", () => {
+  const history = createEditHistory(3);
+  const point = (text: string) => ({ text, caret: text.length, anchor: text.length, selecting: false });
+  for (const text of ["a", "ab", "abc", "abcd"]) history.record(point(text));
+  expect(history.sizes()).toEqual([3, 0]);
+  expect(history.undo(point("abcde"))).toEqual(point("abcd"));
+  expect(history.undo(point("abcd"))).toEqual(point("abc"));
+  expect(history.redo(point("abc"))).toEqual(point("abcd"));
+  history.record(point("abcd"));
+  expect(history.redo(point("abcd!"))).toBeUndefined();
+  history.clear(); expect(history.sizes()).toEqual([0, 0]);
 });

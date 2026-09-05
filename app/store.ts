@@ -8,8 +8,9 @@ import { createScroller, bindDpadScroll } from "@pocketjs/framework/kinetics";
 import { getOps } from "@pocketjs/framework/host";
 import { textTileKey, uploadLine } from "./tiles.ts";
 import { moveSourceCaret, sourceAdvance, sourceLayout, sourceWindow } from "./editor.ts";
+import { createEditHistory, type EditSnapshot } from "./history.ts";
 import { createRowChanges } from "./window.ts";
-import { chordAction, heldBank, moveListSelection, type Action, type Bank } from "./commands.ts";
+import { BANKS, heldBank, moveCommand, moveListSelection, type Action, type Bank } from "./commands.ts";
 import { FILE_H, LINE_H, SOURCE_COLUMNS, SOURCE_FONT_SLOT, VIEW_H } from "../shared/layout.ts";
 export type FileRow = { id: number; title: string; bytes: number };
 type Document = { id: number; title: string; revision: string; layout: string; rows: number; chars: number; mini: number[]; outline: { row: number; title: string }[]; links: string[] };
@@ -17,11 +18,16 @@ type Draft = { start: number; end: number; text: string; revision: string };
 export type RowSpec = { row: number; kind: number; columns?: number[]; header?: boolean };
 export type Tile = { handle: number; kind: number; start: number };
 
-export function createFolio() {
+export function createDoc() {
   const io = offload();
   const [mode, setMode] = createSignal<"read" | "edit" | "search">("read");
   const [focus, setFocus] = createSignal<"library" | "document">("library");
   const [menu, setMenu] = createSignal<Bank>();
+  const [commandIndex, setCommandIndex] = createSignal(0);
+  const [sheetModal, setSheetModal] = createSignal(false);
+  const history = createEditHistory();
+  const [historySizes, setHistorySizes] = createSignal<readonly [number, number]>([0, 0]);
+  let cleanText = "", lastShift = -100, lastBank: Bank | undefined, dismissedBank: Bank | undefined;
   const [status, setStatus] = createSignal("Waiting for Mac...");
   const [online, setOnline] = createSignal(false);
   const [total, setTotal] = createSignal(0);
@@ -29,7 +35,7 @@ export function createFolio() {
   const [draft, setDraft] = createSignal<Draft>();
   const [caret, setCaret] = createSignal(0);
   const [query, setQuery] = createSignal("");
-  const [shift, setShift] = createSignal(false);
+  const [shift, setShift] = createSignal<"off" | "once" | "locked">("off");
   const [symbols, setSymbols] = createSignal(false);
   const [selected, setSelected] = createSignal(0);
   const [saving, setSaving] = createSignal(false);
@@ -54,7 +60,7 @@ export function createFolio() {
   const editorRows = createMemo(() => source().slice(editorFirst(), editorFirst() + 10));
   const caretRow = createMemo(() => Math.max(0, source().findIndex(r => caret() >= r.start && caret() <= r.end)));
   const blink = createCaretBlink({ onChange: setCaretVisible });
-  createEffect(() => blink.setActive(mode() === "edit" && focus() === "document" && !confirmDiscard()));
+  createEffect(() => blink.setActive(mode() === "edit" && focus() === "document" && !sheetModal() && !menu()));
   createEffect(() => blink.setHeld(caretDragging()));
   createEffect(() => {
     caret(); draft(); blink.reset();
@@ -85,8 +91,8 @@ export function createFolio() {
     return lines;
   });
   const activeScroll = () => focus() === "library" ? libraryScroll : scroll;
-  bindDpadScroll(scroll, { active: () => !confirmDiscard() && !menu() && focus() === "document" && mode() === "read", stepPx: 7, nubPx: 12 });
-  bindDpadScroll(libraryScroll, { active: () => !confirmDiscard() && !menu() && focus() === "library", stepPx: 0, nubPx: 12 });
+  bindDpadScroll(scroll, { active: () => !sheetModal() && !menu() && focus() === "document" && mode() === "read", stepPx: 7, nubPx: 12 });
+  bindDpadScroll(libraryScroll, { active: () => !sheetModal() && !menu() && focus() === "library", stepPx: 0, nubPx: 12 });
   const clearPending = () => { generation++; for (const id of inflight.values()) io.cancel(id); inflight.clear(); };
   const cancelSpatial = (pane?: "library" | "document") => {
     for (const [key, id] of inflight) {
@@ -130,7 +136,7 @@ export function createFolio() {
     if (dirty()) { setStatus("Save or discard the current draft first"); return; }
     clearPending();
     request("open", "document.open", { id }, p => {
-      clearTiles(); setDoc(p); setMode("read"); setDraft(undefined); setDirty(false); setSaving(false); setSelecting(false);
+      clearTiles(); setDoc(p); setMode("read"); setDraft(undefined); setDirty(false); setSaving(false); setSelecting(false); history.clear(); setHistorySizes(history.sizes());
       if (focusAfter) setFocus("document");
       if (!preserve) scroll.scrollTo(0, { immediate: true });
       setStatus("L: Library   R: Document");
@@ -141,31 +147,46 @@ export function createFolio() {
     setFocus("document"); scroll.stop();
     if (draft()) { setMode("edit"); if (select) { setAnchor(caret()); setSelecting(true); } return; }
     request("edit", "document.edit", { id: d.id, revision: d.revision, row: Math.max(0, Math.floor(scroll.offset() / LINE_H)) }, p => {
-      setDraft(p); setCaret(0); setAnchor(0); setSelecting(select); setMode("edit"); setDirty(false); op = "";
+      cleanText = p.text; history.clear(); setHistorySizes(history.sizes()); setDraft(p); setCaret(0); setAnchor(0); setSelecting(select); setMode("edit"); setDirty(false); op = "";
       setStatus(select ? "Hold space, then drag to select" : "Editing source excerpt");
     });
   };
-  const insert = (add: string) => {
+  const snapshot = (): EditSnapshot => ({ text: draft()!.text, caret: caret(), anchor: anchor(), selecting: selecting() });
+  const restore = (value: EditSnapshot | undefined) => {
+    if (!value || !draft()) return;
+    setDraft({ ...draft()!, text: value.text }); setCaret(value.caret); setAnchor(value.anchor); setSelecting(value.selecting);
+    setDirty(value.text !== cleanText); setHistorySizes(history.sizes()); op = "";
+  };
+  const insert = (add: string, range = selection()) => {
     if (saving()) return;
     const d = draft(); if (!d) return;
-    const [from, to] = selection();
+    const [from, to] = range;
     if (d.text.length - (to - from) + add.length > 768) { setStatus("Excerpt is full; save before continuing"); return; }
-    setDraft({ ...d, text: d.text.slice(0, from) + add + d.text.slice(to) });
-    setCaret(from + add.length); setAnchor(from + add.length); setSelecting(false); setDirty(true); op = "";
+    history.record(snapshot()); setHistorySizes(history.sizes());
+    const text = d.text.slice(0, from) + add + d.text.slice(to);
+    setDraft({ ...d, text });
+    setCaret(from + add.length); setAnchor(from + add.length); setSelecting(false); setDirty(text !== cleanText); op = "";
   };
   const key = (value: string) => {
-    if (saving() || confirmDiscard()) return;
-    if (value === "SHIFT") { setShift(!shift()); return; }
+    if (saving() || sheetModal() || menu()) return;
+    if (value === "SHIFT") {
+      setShift(shift() === "locked" ? "off" : shift() === "once" ? ticks - lastShift <= 21 ? "locked" : "off" : "once");
+      lastShift = ticks; return;
+    }
+    lastShift = -100;
     if (value === "#+=") { setSymbols(!symbols()); return; }
     if (value === "DONE") { mode() === "search" ? search() : save(); return; }
-    if (mode() === "search") { setQuery(q => value === "DEL" ? q.slice(0, -1) : (q + (value === "SPACE" ? " " : value === "ENTER" ? "" : value)).slice(0, 80)); return; }
+    if (mode() === "search") {
+      setQuery(q => value === "DEL" ? q.slice(0, -1) : (q + (value === "SPACE" ? " " : value === "ENTER" ? "" : shift() !== "off" ? value.toUpperCase() : value)).slice(0, 80));
+      if (value !== "DEL" && shift() === "once") setShift("off"); return;
+    }
     const d = draft(); if (!d) return;
     if (value === "DEL") {
       const [from, to] = selection();
       if (from !== to) { insert(""); return; }
       const n = caret() > 1 && /[\uDC00-\uDFFF]/.test(d.text[caret() - 1]) ? 2 : 1;
-      if (caret()) { setAnchor(caret() - n); setSelecting(true); insert(""); }
-    } else { insert(value === "SPACE" ? " " : value === "ENTER" ? "\n" : shift() ? value.toUpperCase() : value); setShift(false); }
+      if (caret()) insert("", [caret() - n, caret()]);
+    } else { insert(value === "SPACE" ? " " : value === "ENTER" ? "\n" : shift() !== "off" ? value.toUpperCase() : value); if (shift() === "once") setShift("off"); }
   };
   const moveCaret = (n: number) => {
     let next = Math.max(0, Math.min(draft()?.text.length ?? 0, caret() + n));
@@ -179,7 +200,7 @@ export function createFolio() {
   };
   const save = () => {
     const d = doc(), e = draft(); if (!d || !e || saving()) return;
-    if (!dirty()) { setMode("read"); return; }
+    if (!dirty()) { setMode("read"); setSelecting(false); return; }
     op ||= `${d.id}-${d.revision.slice(0, 16)}-${ticks}-${Math.floor(Math.random() * 1000000000)}`;
     const sent = request("save", "document.save", { ...e, id: d.id, op }, () => {
       setSaving(false); setDirty(false); setStatus("Saved on Mac"); open(d.id, true);
@@ -209,14 +230,14 @@ export function createFolio() {
   };
   const followLink = () => { const name = doc()?.links[0]; if (name) request("link", "library.link", { name }, p => open(p.id)); };
   const toggleSelect = () => {
-    if (mode() !== "edit") { edit(true); return; }
+    if (mode() !== "edit" || saving()) return;
     if (!selecting()) setAnchor(caret());
     setSelecting(!selecting());
   };
   const cancelDiscard = () => { setConfirmDiscard(false); setStatus("Draft retained"); };
   const discard = () => {
     if (!confirmDiscard() || saving()) return;
-    clearPending(); setDirty(false); setDraft(undefined); setSelecting(false); setMode("read"); setConfirmDiscard(false);
+    clearPending(); history.clear(); setHistorySizes(history.sizes()); setDirty(false); setDraft(undefined); setSelecting(false); setMode("read"); setConfirmDiscard(false);
     setCaretDragging(false); setStatus("Changes discarded");
     if (doc() && online()) open(doc()!.id, true);
   };
@@ -227,9 +248,12 @@ export function createFolio() {
       case "focus-list": setFocus("library"); break;
       case "focus-document": setFocus("document"); break;
       case "search": setMode("search"); setFocus("library"); break;
+      case "clear-search": setQuery(""); search(); break;
+      case "undo": if (mode() === "edit" && draft() && !saving()) restore(history.undo(snapshot())); break;
+      case "redo": if (mode() === "edit" && draft() && !saving()) restore(history.redo(snapshot())); break;
       case "refresh": clearPending(); files.clear(); fileChanges.clear(); retryAt = 0; break;
       case "edit": edit(); break;
-      case "read": setMode("read"); setStatus(dirty() ? "Draft retained; R+A resumes" : "L: Library   R: Document"); break;
+      case "read": setMode("read"); setSelecting(false); setAnchor(caret()); setCaretDragging(false); setStatus(dirty() ? "Draft retained; tap Resume to edit" : "L: Files   R: Document"); break;
       case "save": save(); break;
       case "link": followLink(); break;
       case "select": toggleSelect(); break;
@@ -242,7 +266,23 @@ export function createFolio() {
       case "top": jump(0, "document"); break;
       case "end": jump(1, "document"); break;
       case "heading": nextHeading(1); break;
+      case "previous-heading": nextHeading(-1); break;
     }
+  };
+  const canAction = (action: Action): boolean => {
+    if (sheetModal() || saving()) return false;
+    if (["search", "refresh", "focus-list", "clear-search"].includes(action)) return true;
+    if (action === "open") return online() && !dirty() && total() > 0;
+    if (!doc()) return false;
+    if (action === "undo" || action === "redo") return mode() === "edit" && historySizes()[action === "undo" ? 0 : 1] > 0;
+    if (action === "select") return mode() === "edit";
+    if (action === "copy") return mode() === "edit" && selection()[0] !== selection()[1];
+    if (action === "paste") return mode() === "edit" && !!clipboard;
+    if (action === "read") return mode() === "edit";
+    if (action === "save") return !!draft() && dirty() && online();
+    if (action === "discard") return !!draft() && dirty();
+    if (action === "heading" || action === "previous-heading" || action === "link") return mode() === "read" && online() && (action !== "link" || !!doc()?.links.length);
+    return action !== "edit" || !!draft() || online();
   };
   onFrame(buttons => {
     ticks++; setOnline(io.connected());
@@ -259,21 +299,36 @@ export function createFolio() {
       });
     }
     const pressed = buttons & ~previous; previous = buttons;
-    if (confirmDiscard()) {
+    if (sheetModal()) {
       setMenu(undefined);
-      if (pressed & BTN.CROSS) cancelDiscard();
-      else if (pressed & BTN.CIRCLE) discard();
+      if (confirmDiscard() && pressed & BTN.CROSS) cancelDiscard();
+      else if (confirmDiscard() && pressed & BTN.CIRCLE) discard();
       return;
     }
-    const bank = heldBank(buttons); setMenu(bank);
-    const action = chordAction(bank, pressed);
-    if (action) perform(action);
-    if (bank || mode() !== "edit" || focus() === "library") {
+    const bank = heldBank(buttons);
+    const directions = buttons & (BTN.UP | BTN.DOWN | BTN.LEFT | BTN.RIGHT);
+    navHeld = directions ? navHeld + 1 : 0;
+    const nav = pressed | (navHeld > 18 && navHeld % 6 === 0 ? directions : 0);
+    if (bank !== lastBank) {
+      lastBank = bank; dismissedBank = undefined; setCommandIndex(0); navHeld = 0;
+      if (bank) { scroll.stop(); libraryScroll.stop(); editorScroll.stop(); setCaretDragging(false); }
+    }
+    setMenu(bank !== dismissedBank ? bank : undefined);
+    if (bank) {
+      if (menu()) {
+        setCommandIndex(moveCommand(bank, commandIndex(), nav));
+        const action = BANKS[bank].actions[commandIndex()].action;
+        if (pressed & BTN.CROSS) { dismissedBank = bank; setMenu(undefined); }
+        else if (pressed & BTN.CIRCLE && canAction(action)) {
+          dismissedBank = bank; setMenu(undefined); perform(action);
+        }
+      }
+      return;
+    }
+    if (mode() !== "edit" || focus() === "library") {
       if (pressed & BTN.LEFT) setFocus("library");
       if (pressed & BTN.RIGHT) setFocus("document");
     }
-    navHeld = buttons & (BTN.UP | BTN.DOWN) ? navHeld + 1 : 0;
-    const nav = pressed | (navHeld > 18 && navHeld % 6 === 0 ? buttons & (BTN.UP | BTN.DOWN) : 0);
     if (focus() === "library" && nav & (BTN.UP | BTN.DOWN)) {
       libraryScroll.stop();
       setSelected(moveListSelection(selected(), nav & BTN.DOWN ? 1 : -1, libraryScroll.offset(), VIEW_H, total(), FILE_H));
@@ -329,7 +384,7 @@ export function createFolio() {
       const resource = tileResources.get(row) ?? createResourceSlot<Tile>(() => rowChanges.notify(row));
       let ticket = 0;
       if (request(`tile:${row}`, "document.tile", { id: d.id, revision: d.revision, layout: d.layout, row }, p => {
-        const handle = uploadLine(p.mask, p.kind);
+        const handle = uploadLine(p.mask, p.kind, false, p.colors);
         if (handle < 0) { resource.reject(ticket, "Texture unavailable"); return; }
         const tile = { handle, kind: p.kind, start: p.start };
         if (!resource.resolve(ticket, tile)) { getOps().freeTexture?.(handle); return; }
@@ -352,7 +407,7 @@ export function createFolio() {
   });
   onCleanup(() => { clearPending(); clearTiles(); for (const handle of textTiles.values()) getOps().freeTexture?.(handle); });
   return {
-    mode, setMode, focus, setFocus, menu, status, online, total, textVersion, doc, draft, caret, query, shift, symbols, selected, setSelected,
+    mode, setMode, focus, setFocus, menu, commandIndex, canAction, sheetModal, setSheetModal, historySizes, status, online, total, textVersion, doc, draft, caret, query, shift, symbols, selected, setSelected,
     firstRow, firstFile, source, sourceCellWidth, sourceWidth, editorFirst, editorScroll, caretRow, caretVisible, caretDragging, setCaretDragging, dragCaret,
     tiles, rowSpecs, files, textTiles, editorRows, sourceLines, scroll, libraryScroll, activeScroll, dirty, saving, selecting, selection, confirmDiscard,
     key, moveCaret, save, search, activate, edit, jump, open, nextHeading, followLink, toggleSelect, perform, discard, cancelDiscard,
@@ -362,4 +417,4 @@ export function createFolio() {
     diagnostics: () => ({ cachedTiles: tiles.size, resourceSlots: tileResources.size, pending: inflight.size, offset: scroll.offset(), frame: ticks }),
   };
 }
-export type Folio = ReturnType<typeof createFolio>;
+export type Doc = ReturnType<typeof createDoc>;
