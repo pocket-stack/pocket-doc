@@ -194,4 +194,10 @@ with no startup exception. The 3DS stack remains 192 KiB. The production build
 uses runtime `d7826c29` and contains no capture code.
 It is **1,668,520 bytes**, SHA-256
 `5fbf92b5eee9d91919af1f0eb759c064eb02a640249f8ce386f403feff1e8356`.
-Installation and physical interaction acceptance are pending.
+**Installed at 172.20.12.37:5000 with byte-exact FTP readback** on 2026-09-05.
+The new app-scoped pairing key also verifies. The known previous launcher was
+archived under `/pocketjs/migrations/pocket-doc/` after its hash was checked;
+an FTP directory check confirms that `/3DS/pocketdoc-main.3dsx` is present and
+the old launcher is absent. The matching Mac provider is running against
+`data/library-v2/`. The local receipt is `dist/qa/deploy.json`. Physical relaunch
+and interaction acceptance of this revision remain pending.
