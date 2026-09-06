@@ -1,0 +1,24 @@
+name: Application checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  mac-provider:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --cwd runtime --frozen-lockfile
+      - run: bun scripts/setup.ts
+      - run: bun run check
+      - run: bun runtime/node_modules/typescript/bin/tsc --noEmit
+      - run: bun run 3ds --pocket-only
+      - run: brew install quickjs
+      - run: qjs --std --stack-size 131072 scripts/quickjs-smoke.js
