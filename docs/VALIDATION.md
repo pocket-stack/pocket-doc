@@ -5,7 +5,53 @@ The current generated corpus has **1,000 Markdown files**, from **114,690** to
 The interaction replay copies that corpus into `dist/qa/replay-library/`; its
 create and save checks never write the paired Mac's live library.
 
-## Current automated checks
+## Scoped resource views on Solid 1
+
+The runtime pin uses **Solid 1.9.14** and the main branch's unchanged lockfile.
+The application adopts shared scheduling/cache ownership without changing its
+effects, batching, renderer or frame-commit contracts. Solid 2 work is deferred
+until comparative benchmarks are available; its checks are not receipts for
+this resource-only build.
+
+All **28 application tests / 671 assertions**, TypeScript, production guest and
+pinned-toolchain native ARM build checks pass. The **839-frame QuickJS replay
+passes at 128 KiB**. The native 3DS host remains at 384 KiB. QuickJS allocates
+1,414 native node IDs and uploads 210 textures during that replay.
+
+The isolated **3,231-frame / 93-check** interaction replay uses four-frame
+provider latency and keeps requests within **four**, Markdown textures within
+**72**, and resource slots within **72**. It covers offline drafts, failures and
+retry, table reveal, whole-document navigation, caret/keyboard/selection,
+modal cleanup, and create/save/delete recovery. The replay copies the corpus;
+it does not modify the paired Mac's live library.
+
+The separate 360-frame circle-pad regression records **2,142 native UI mutations**
+(1,100 down, 1,042 up; segment peaks 72 and 27), below the existing per-direction
+1,800-call limit. Settled motion remains uniform. This is a behavioral/work-count
+check on Mac, not a physical frame-time benchmark.
+
+| Build | Guest JS bytes | Native binary bytes | Passing QuickJS stack check |
+| --- | ---: | ---: | ---: |
+| Main before resource extraction | 250,723 | 1,694,848 | 128 KiB |
+| First extraction / Solid 1 | 265,145 | 1,709,424 | 128 KiB |
+| Scoped views / Solid 1 | 269,552 | 1,713,840 | 128 KiB |
+
+Scoped views add **4,407 guest bytes (1.7%)** over the first extraction, and
+**18,829 bytes (7.5%)** over main before extraction. The affected application
+files shrink from **937 to 891 physical lines** (46 fewer); the same files on
+main contained 893 lines. Notification lanes, version signals, the central
+Unicode demand scan and cache compatibility wrappers are removed. The frame
+mutation counts above are unchanged from the first extraction. No rendering
+speedup is claimed. The native binary was installed at `192.168.8.102:5000` with byte-exact FTP
+readback; its SHA-256 is
+`c6bfe4357ef70033bf7ff296b96bde462c6d0a7998226297f7f4ca17e0e40c7e`.
+The user confirmed physical operation on 2026-09-06. PocketJS main `066b8c5f`
+has the same tree as the validated `f53d474c` runtime. This acceptance does not
+supply a hardware frame-time benchmark. Older screenshot/deployment records
+below describe preceding builds. See [resource ownership](RESOURCES.md) for the API and
+application/provider responsibilities.
+
+## Before the resource refactor
 
 - **28 application tests** pass, including full-source staging, cross-window
   undo/redo, idempotent retries, restart/save recovery, external-edit conflicts,
@@ -40,7 +86,7 @@ browsing, editing, creating `hello.md`, and opening it in Finder on the Mac. Run
 `bun scripts/sim.ts` to refresh them and `dist/qa/sim.json` after building the
 guest and the runtime Wasm artifact. Only the QA directory is replaced.
 
-## Current deployment
+## Installed demo (before this refactor)
 
 The spacing, short-document and delete revision and its app-scoped pairing key
 are **installed with byte-exact FTP readback** at 172.20.12.37:5000. The matching

@@ -98,7 +98,7 @@ await frames(2); const loadingA = await shot("loading-a");
 await frames(22); const loadingB = await shot("loading-b");
 check(Buffer.compare(loadingA, loadingB) !== 0, "Skeleton animation advances while the host is offline");
 connected = 1; await frames(220); await checkDeck(); await shot("read");
-check(s.total() === 1000 && s.doc()?.id === 1 && s.tiles.size > 20, "Both panes load from the full 1000-file library");
+check(s.total() === 1000 && s.doc()?.id === 1 && s.diagnostics().cachedTiles > 20, "Both panes load from the full 1000-file library");
 const original = s.scroll.offset();
 await frames(1, BTN.LTRIGGER); await shot("menu-library");
 check(s.menu() === "library" && s.scroll.offset() === original, "Holding L opens its menu without jumping");
@@ -114,12 +114,13 @@ check(!s.menu(), "B dismisses the panel until its shoulder is released"); await 
 await frames(1, BTN.ZL | BTN.ZR); check(!s.menu(), "ZL/ZR no longer open command banks"); await frames(1);
 const codeRow = layout(readFileSync("data/library-v2/note-0001.md", "utf8")).rows.findIndex(row => !!row.code);
 s.jump(codeRow * 20 / (s.doc()!.rows * 20 - 194), "document"); await frames(100); await shot("syntax-code");
-check(s.tiles.has(codeRow), "Highlighted code streams through the bounded resource cache");
+check(s.rowResource(codeRow).status === "ready", "Highlighted code streams through the bounded resource cache");
 const block = s.firstCode()!; const codeY = s.scroll.offset();
 check(block.width > 256, "Code fixture overflows without wrapping");
 await press(BTN.RIGHT); check(s.codeOffset(block.block) === 21 && s.scroll.offset() === codeY && s.focus() === "document", "Right scrolls the first visible code block without changing vertical offset or focus");
 await frames(50); await shot("code-horizontal");
-check(s.tiles.get(codeRow)?.x === 21, "Replacement syntax tile matches the horizontal viewport");
+const codeTile = s.rowResource(codeRow);
+check(codeTile.status === "ready" && codeTile.value.x === 21, "Replacement syntax tile matches the horizontal viewport");
 await press(BTN.LEFT); check(s.codeOffset(block.block) === 0, "Left returns the visible code block to its beginning");
 s.jump(0, "document"); await frames(30);
 
@@ -144,7 +145,7 @@ const tableRow = layout(readFileSync("data/library-v2/note-0001.md", "utf8")).ro
 check(tableRow > 120, "Fixture contains a table outside the initial prefetch window");
 withholdTiles = true;
 s.jump(tableRow * 20 / ((s.doc()!.rows * 20) - 194), "document"); await frames(20);
-check(!!s.rowSpecs.get(tableRow)?.columns && s.rowResource(tableRow).status === "pending", "Table geometry arrives independently of its pending image");
+check(!!s.rowSpec(tableRow)?.columns && s.rowResource(tableRow).status === "pending", "Table geometry arrives independently of its pending image");
 await shot("table-loading"); const tableOffset = s.scroll.offset();
 withholdTiles = false; await frames(110); await shot("table");
 check(s.rowResource(tableRow).status === "ready" && s.scroll.offset() === tableOffset, "Table image replaces fallback without moving its viewport");

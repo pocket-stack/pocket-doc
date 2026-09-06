@@ -1,5 +1,5 @@
 // Run the compiled guest in QuickJS, with a stricter 128 KiB stack than the
-// 3DS host's 192 KiB. Host operations are stubs: this checks JS execution and
+// 3DS host's 384 KiB. Host operations are stubs: this checks JS execution and
 // resource transitions, while scripts/sim.ts and native captures check pixels.
 let node = 3, texture = 1, session = -1, ticks = 0, failures = false, libraryTotal = 1000;
 const replies = [];
@@ -48,7 +48,7 @@ try {
   const s = globalThis.__doc;
   frames(60); check(s.mode()==="read", "offline mount failed");
   session=1; frames(100); s.setFocus("document"); frames(60,0,0x80ff); frames(60,0,0x8000);
-  check(s.total()===1000 && s.tiles.size>=24, "resource reveal failed");
+  check(s.total()===1000 && s.diagnostics().cachedTiles>=24, "resource reveal failed");
   failures=true; s.jump(0.5,"document"); frames(100);
   const row = Math.floor(s.scroll.offset()/20);
   check(s.rowResource(row).status==="error", "resource error fallback not exercised");
@@ -57,7 +57,7 @@ try {
   frames(1,0x0200); frames(1,0x0200|0x0040); frames(1,0x0200); frames(1,0x0200|0x2000); frames(40);
   check(s.mode()==="edit" && s.caret()===0, "editor chord leaked a plain A press");
   s.key("中"); frames(20);
-  check(s.dirty() && s.textTiles.size>0, "Unicode source resource failed");
+  check(s.dirty() && s.diagnostics().textTiles>0, "Unicode source resource failed");
   const draft=s.draft().text; session=-1; frames(20);
   s.perform("discard"); frames(1); check(s.confirmDiscard(), "discard sheet missing");
   s.cancelDiscard(); frames(14); check(s.draft().text===draft, "cancel discarded the draft");

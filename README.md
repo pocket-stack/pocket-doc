@@ -31,7 +31,8 @@ renderer. Each image shows the upper screen above the lower touch screen.
 | --- | --- | --- |
 | <img src="docs/table.png" width="260" alt="A Markdown table rendered with aligned cells" /> | <img src="docs/new-document.png" width="260" alt="Filename dialog with the touch keyboard ready to create a Markdown document" /> | <img src="docs/menu.png" width="260" alt="The L shoulder menu with New document, Open, Search, Refresh and Delete commands" /> |
 
-See [validation receipts](docs/VALIDATION.md) for capture provenance and checks.
+See [shared resource ownership](docs/RESOURCES.md) and
+[validation receipts](docs/VALIDATION.md) for architecture, capture provenance and checks.
 
 ## Run
 
@@ -176,7 +177,7 @@ encoded inside a bounded offload reply. The 3DS uploads it through the framework
 native coverage decoder and retains at most **72 document resources/textures**
 plus **20 small text textures** and 96 file/row metadata entries per cache.
 There are twelve mounted rows per pane. Each physical slot follows its row until
-it leaves the viewport; crossing one row reassigns one slot. Per-slot notifications
+it leaves the viewport; crossing one row reassigns one slot. Framework per-key subscriptions
 keep arriving resources from invalidating the whole view. Row movement uses
 paint transforms. Scrolling uses
 PocketJS `createScroller`, the same kinetic state machine as the Contacts demo.
@@ -291,7 +292,8 @@ table textures, source editing, Unicode resources and disconnection. CI runs
 this check because a Bun/Wasm replay does not exercise QuickJS's recursive
 interpreter stack. Native ARM capture remains a separate validation gate.
 
-See [validation receipts](docs/VALIDATION.md) for measured results and the
+See [shared resource ownership](docs/RESOURCES.md) and
+[validation receipts](docs/VALIDATION.md) for measured results and the
 remaining device acceptance of the interaction revision.
 
 Pocket Term informed the decision to rasterize missing glyphs on the Mac.
