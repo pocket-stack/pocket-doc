@@ -1,4 +1,4 @@
-import { batch, createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
+import { createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
 import { createCaretBlink } from "@pocketjs/framework/animation";
 import { offload } from "@pocketjs/framework/offload";
 import { pending, ready, type ResourceState } from "@pocketjs/framework/resource-state";
@@ -98,10 +98,10 @@ export function createDoc() {
   });
   const caretX = () => { const r = source()[caretRow() - editorBase()]; return sourceWidth((r?.text ?? "").slice(0, caret() - (r?.start ?? 0))); };
   const blink = createCaretBlink({ onChange: setCaretVisible });
-  createEffect(() => blink.setActive((mode() === "create" || mode() === "edit" && focus() === "document") && !sheetModal() && !menu()));
-  createEffect(() => blink.setHeld(caretDragging()));
-  createEffect(() => {
-    caret(); blink.reset();
+  createEffect(() => (mode() === "create" || mode() === "edit" && focus() === "document") && !sheetModal() && !menu(), active => blink.setActive(!!active));
+  createEffect(caretDragging, held => blink.setHeld(held));
+  createEffect(caret, () => {
+    blink.reset();
     untrack(() => {
       const top = caretRow() * 18, offset = editorScroll.offset();
       if (top < offset) editorScroll.scrollTo(top, { immediate: true });
@@ -148,7 +148,7 @@ export function createDoc() {
         if (inflight.get(key) === id) inflight.delete(key);
         if (gen !== generation) return;
         if (!result.ok) { setStatus(result.error); retryAt = ticks + 90; setSaving(false); fail?.(result.error); return; }
-        try { batch(() => receive(JSON.parse(result.value))); }
+        try { receive(JSON.parse(result.value)); }
         catch (error) { const message = error instanceof Error ? error.message : "Invalid provider response"; setStatus(message); fail?.(message); }
       });
     } catch (error) { setStatus(error instanceof Error ? error.message : "Request exceeds budget"); return false; }

@@ -5,7 +5,49 @@ The current generated corpus has **1,000 Markdown files**, from **114,690** to
 The interaction replay copies that corpus into `dist/qa/replay-library/`; its
 create and save checks never write the paired Mac's live library.
 
-## Current automated checks
+## Resource and Solid 2 migration
+
+The runtime migration uses Solid **2.0.0-rc.6**, universal renderer **2.0.0-rc.6**
+and Babel preset **2.0.0-rc.2**. These measurements use the same isolated corpus.
+The resource-only baseline was measured before changing Solid, separating the
+two changes.
+
+| Revision | Guest JS bytes | QuickJS stack check | Replay |
+| --- | ---: | ---: | --- |
+| Original / Solid 1 | 250,723 | 128 KiB | 839 frames |
+| Shared resources / Solid 1 | 264,913 | 128 KiB | 839 frames; 3,231 simulated frames / 93 checks |
+| Shared resources / Solid 2 | 334,683 | 192 KiB | 839 frames; 3,231 simulated frames / 93 checks |
+
+The Solid upgrade adds **69,770 guest bytes (26.3%)** over the resource-only
+baseline. The old 128 KiB stack check fails; 192 KiB passes. The native host
+remains at **384 KiB**. Native node IDs allocated during the QuickJS replay
+change from 1,308 to 1,302; texture uploads remain at 201. These allocation
+counts do not measure elapsed rendering time.
+
+All **28 application tests / 671 assertions**, TypeScript, production guest and
+native ARM build checks pass. The build uses `nightly-2026-07-02` through rustup
+(`~/.cargo/bin` before Homebrew Rust on PATH). The new native binary is
+**1,778,960 bytes** and has not been installed on the 3DS.
+
+The 3,231-frame replay uses four-frame provider latency. Both resource-only and
+Solid 2 builds reach **four outstanding requests, 72 Markdown textures and
+72 resource slots**. Inertial offsets match: 106.8192 before release and
+687.5264990900281 after the sampled glide. Tests cover create/save/delete,
+whole-document window transitions, retained offline drafts, selection, caret,
+shift, modal cleanup, table reveal, resource errors and recovery.
+
+The separate 360-frame circle-pad replay records **2,154 native UI mutations**
+(1,112 downward, 1,042 upward; segment peaks 72 and 27). Settled motion remains
+uniform, and request/texture bounds hold. This passes the replay's per-direction
+1,800-call ceiling. It is not a device frame-time measurement.
+
+The migration and ownership patterns are documented in [RESOURCES.md](RESOURCES.md).
+PSP hardware regression of the paired framework is recorded in its
+`docs/SOLID2.md` and `docs/validation/solid2-psp.json`. It does not replace a
+3DS installation, startup or physical touch/performance receipt for Pocket Doc.
+The images and deployment records below describe the earlier shipped demo.
+
+## Pre-migration automated checks
 
 - **28 application tests** pass, including full-source staging, cross-window
   undo/redo, idempotent retries, restart/save recovery, external-edit conflicts,
@@ -40,7 +82,7 @@ browsing, editing, creating `hello.md`, and opening it in Finder on the Mac. Run
 `bun scripts/sim.ts` to refresh them and `dist/qa/sim.json` after building the
 guest and the runtime Wasm artifact. Only the QA directory is replaced.
 
-## Current deployment
+## Installed demo (before this migration)
 
 The spacing, short-document and delete revision and its app-scoped pairing key
 are **installed with byte-exact FTP readback** at 172.20.12.37:5000. The matching

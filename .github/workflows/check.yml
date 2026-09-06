@@ -21,4 +21,4 @@ jobs:
       - run: bun runtime/node_modules/typescript/bin/tsc --noEmit
       - run: bun run 3ds --pocket-only
       - run: brew install quickjs
-      - run: qjs --std --stack-size 131072 scripts/quickjs-smoke.js
+      - run: qjs --std --stack-size 196608 scripts/quickjs-smoke.js
