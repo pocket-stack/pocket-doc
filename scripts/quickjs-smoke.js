@@ -1,4 +1,4 @@
-// Run the compiled guest in QuickJS, with a stricter 192 KiB stack than the
+// Run the compiled guest in QuickJS, with a stricter 128 KiB stack than the
 // 3DS host's 384 KiB. Host operations are stubs: this checks JS execution and
 // resource transitions, while scripts/sim.ts and native captures check pixels.
 let node = 3, texture = 1, session = -1, ticks = 0, failures = false, libraryTotal = 1000;
@@ -45,30 +45,30 @@ function frames(n, buttons=0, analog=0x8080) {
 function check(condition, message) { if (!condition) throw new Error(message); }
 try {
   std.loadScript(scriptArgs[1] || "runtime/dist/3ds/guest/pocketdoc-main.js");
-  const s = globalThis.__doc; const act = globalThis.__docAct;
+  const s = globalThis.__doc;
   frames(60); check(s.mode()==="read", "offline mount failed");
-  session=1; frames(100); act(() => { s.setFocus("document"); }); frames(60,0,0x80ff); frames(60,0,0x8000);
+  session=1; frames(100); s.setFocus("document"); frames(60,0,0x80ff); frames(60,0,0x8000);
   check(s.total()===1000 && s.tiles.size>=24, "resource reveal failed");
-  failures=true; act(() => { s.jump(0.5,"document"); }); frames(100);
+  failures=true; s.jump(0.5,"document"); frames(100);
   const row = Math.floor(s.scroll.offset()/20);
   check(s.rowResource(row).status==="error", "resource error fallback not exercised");
   failures=false; frames(140);
   check(s.rowResource(row).status==="ready", "resource retry failed");
   frames(1,0x0200); frames(1,0x0200|0x0040); frames(1,0x0200); frames(1,0x0200|0x2000); frames(40);
   check(s.mode()==="edit" && s.caret()===0, "editor chord leaked a plain A press");
-  act(() => { s.key("中"); }); frames(20);
+  s.key("中"); frames(20);
   check(s.dirty() && s.diagnostics().textTiles>0, "Unicode source resource failed");
   const draft=s.draft().text; session=-1; frames(20);
-  act(() => { s.perform("discard"); }); frames(1); check(s.confirmDiscard(), "discard sheet missing");
-  act(() => { s.cancelDiscard(); }); frames(14); check(s.draft().text===draft, "cancel discarded the draft");
+  s.perform("discard"); frames(1); check(s.confirmDiscard(), "discard sheet missing");
+  s.cancelDiscard(); frames(14); check(s.draft().text===draft, "cancel discarded the draft");
   check(s.draft().text===draft, "offline draft lost");
-  session=2; frames(30); act(() => { s.perform("discard"); }); frames(14); act(() => { s.discard(); }); frames(40);
-  act(() => { s.perform("new"); }); frames(1); check(s.mode()==="create", "filename dialog missing");
-  act(() => { s.key("new"); }); act(() => { s.createDocument(); }); frames(30);
+  session=2; frames(30); s.perform("discard"); frames(14); s.discard(); frames(40);
+  s.perform("new"); frames(1); check(s.mode()==="create", "filename dialog missing");
+  s.key("new"); s.createDocument(); frames(30);
   check(s.mode()==="edit" && s.doc().id===1001, "create did not enter editor");
-  act(() => { s.perform("delete"); }); frames(20); check(s.deleteTarget(), "delete confirmation missing");
+  s.perform("delete"); frames(20); check(s.deleteTarget(), "delete confirmation missing");
   frames(1,0x4000); frames(14); check(!s.deleteTarget(), "B did not cancel delete");
-  act(() => { s.perform("delete"); }); frames(20); act(() => { s.removeDocument(); }); frames(50);
+  s.perform("delete"); frames(20); s.removeDocument(); frames(50);
   check(!s.deleteTarget() && libraryTotal===1000 && s.doc().id!==1001, "delete did not refresh the editor");
   std.puts(JSON.stringify({ok:true,frames:ticks,nativeNodeIds:node,uploadedTextures:texture,
     checks:["offline mount","continuous stick scrolling","table reveal","error fallback","retry","editor","Unicode resource","discard cancellation","offline draft","filename dialog","create-to-editor","delete confirmation","delete cancellation","delete refresh"]})+"\n");

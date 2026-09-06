@@ -1,4 +1,4 @@
-# Shared resources and Solid 2
+# Shared resources
 
 Pocket Doc now uses PocketJS resource collections for file pages, Markdown
 geometry, rendered document bands and source-text textures. **The app declares
@@ -63,56 +63,15 @@ journal. A resource retry does not replay a command or change its durability.
 Local typing still updates the draft before a network reply; non-ASCII texture
 refresh and fetching an unloaded source window still require the Mac.
 
-## Solid 1 to Solid 2 patterns
+## Runtime and verification
 
-The paired runtime pins Solid **2.0.0-rc.6**, universal renderer **2.0.0-rc.6**
-and Babel preset **2.0.0-rc.2**. This is a release-candidate dependency upgrade.
+This resource refactor runs on the main branch's **Solid 1.9.14** dependency.
+Effects, `batch`, renderer ownership and host frame delivery keep their existing
+contracts. The cache scheduler is independent of Solid and can be reused through
+PocketJS's other framework entrypoints.
 
-| Concern | Solid 1 | Solid 2 |
-| --- | --- | --- |
-| Held caret effect | `createEffect(() => blink.setHeld(caretDragging()))` | `createEffect(caretDragging, held => blink.setHeld(held))` |
-| Modal cleanup | Read state and register `onCleanup` inside one effect | Compute the blocked state; apply returns the touch-block release function |
-| Reply application | `batch(() => receive(reply))` | Apply the reply; the framework commits staged writes before drawing |
-| Memo initial value | `createMemo(previous => ..., initial)` | `createMemo<T>((previous = initial) => ...)` |
-| Simulator action | Call setter then inspect state | Enter the guest's `latest(run); flush()` action boundary |
-| Runtime imports | Solid 1 core and `solid-js/universal` | One compiler-owned Solid 2 dependency graph and `@solidjs/universal` |
-
-Modal input ownership is now explicit:
-
-```ts
-import { createEffect } from "solid-js";
-import { pushTouchBlock } from "@pocketjs/framework/gesture";
-
-createEffect(
-  () => !!store.menu() || store.mode() === "create",
-  blocked => { if (blocked) return pushTouchBlock(); },
-);
-```
-
-The framework runs input controllers inside `latest()` and commits with
-`flush()` before the native frame is drawn. Controllers can observe preceding
-writes within that frame without rendering after every setter. The app does
-not implement a second timer or Promise-draining loop.
-
-Solid 2 async memos and `Loading` are validated with the native renderer, but
-Pocket Doc's borrowed texture handles continue to use explicit resource states.
-A retained async branch must not keep drawing a handle after cache eviction
-frees it. **Async graph scheduling does not replace cache ownership or upload
-budgets.** Making each row fetch through its own async memo would lose request
-sharing and admission limits.
-
-## Benefits and costs
-
-The resource refactor reduces duplicated app scheduling logic and gives all
-four read types the same bounded delivery, retry and disposal rules. These
-benefits exist independently of the Solid upgrade. Solid 2 adds split effects,
-automatic write batching and supported async graph behavior in the native
-renderer. The same interaction replay passes, including editing, reconnect,
-modal cleanup and inertial scrolling.
-
-The upgrade increases guest size and stack requirements. It does not establish
-a frame-time speedup. The former 128 KiB QuickJS smoke limit fails with the
-Solid 2 bundle; **192 KiB passes**, while the unchanged native 3DS host has a
-384 KiB limit. See [validation receipts](VALIDATION.md) for separate baseline,
-refactor and Solid 2 measurements. The new native binary has not replaced the
-installed demo on the 3DS.
+Read admission, retries and texture disposal now have one implementation. These
+are resource ownership and work-budget changes; they do not establish faster
+physical frame times. See [validation receipts](VALIDATION.md) for the current
+application checks and bundle cost. The QuickJS smoke check uses **128 KiB**,
+while the native 3DS host remains at 384 KiB.

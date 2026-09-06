@@ -31,8 +31,8 @@ renderer. Each image shows the upper screen above the lower touch screen.
 | --- | --- | --- |
 | <img src="docs/table.png" width="260" alt="A Markdown table rendered with aligned cells" /> | <img src="docs/new-document.png" width="260" alt="Filename dialog with the touch keyboard ready to create a Markdown document" /> | <img src="docs/menu.png" width="260" alt="The L shoulder menu with New document, Open, Search, Refresh and Delete commands" /> |
 
-See [resource and Solid migration](docs/RESOURCES.md) for ownership and code
-patterns, and [validation receipts](docs/VALIDATION.md) for capture provenance and checks.
+See [shared resource ownership](docs/RESOURCES.md) and
+[validation receipts](docs/VALIDATION.md) for architecture, capture provenance and checks.
 
 ## Run
 
@@ -276,7 +276,7 @@ bun runtime/tools/wasm.ts
 bun scripts/sim.ts
 bun scripts/scroll-replay.ts
 # Install the QuickJS CLI once with: brew install quickjs
-qjs --std --stack-size 196608 scripts/quickjs-smoke.js
+qjs --std --stack-size 131072 scripts/quickjs-smoke.js
 ```
 
 The simulator writes images and behavioral/caching evidence under `dist/qa`.
@@ -286,16 +286,14 @@ replies. **Mac simulation is not a 3DS performance result.** Native worker telem
 the running provider; installation readback, native rendering, live IO and
 physical touch acceptance are separate receipts.
 
-The QuickJS smoke check executes the compiled guest with a **192 KiB stack**
+The QuickJS smoke check executes the compiled guest with a **128 KiB stack**
 and stub host operations. It covers startup, pending/ready/error resources,
 table textures, source editing, Unicode resources and disconnection. CI runs
 this check because a Bun/Wasm replay does not exercise QuickJS's recursive
-interpreter stack. The prior Solid 1 bundle passed 128 KiB; Solid 2 requires the 192 KiB check.
-The native 3DS host remains at 384 KiB. Native ARM capture remains a separate
-validation gate.
+interpreter stack. Native ARM capture remains a separate validation gate.
 
-See [resource and Solid migration](docs/RESOURCES.md) for ownership and code
-patterns, and [validation receipts](docs/VALIDATION.md) for measured results and the
+See [shared resource ownership](docs/RESOURCES.md) and
+[validation receipts](docs/VALIDATION.md) for measured results and the
 remaining device acceptance of the interaction revision.
 
 Pocket Term informed the decision to rasterize missing glyphs on the Mac.

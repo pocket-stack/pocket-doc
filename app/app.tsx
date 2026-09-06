@@ -1,5 +1,5 @@
 import { DECK, deckLayout, keyboardBottom } from "./deck.ts";
-import { createEffect, createMemo, createSignal, flush, latest, For, onCleanup, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { AuxiliarySurface, Image, Text, View, type NodeMirror } from "@pocketjs/framework/components";
 import { ResourceBoundary, ResourceImage, pending, ready, type TextureResource } from "@pocketjs/framework/resource";
 import { createGesture, pushTouchBlock } from "@pocketjs/framework/gesture";
@@ -147,7 +147,7 @@ function Deck(p: { s: Doc }) {
   const height = () => geometry().height;
   const target = () => p.s.mode() === "edit" ? p.s.editorScroll : p.s.scroll;
   const blocked = () => p.s.sheetModal() || !!p.s.menu();
-  createEffect(() => !!p.s.menu() || p.s.mode() === "create", blocked => { if (blocked) return pushTouchBlock(); });
+  createEffect(() => { if (p.s.menu() || p.s.mode() === "create") onCleanup(pushTouchBlock()); });
   createGesture({ surface: "auxiliary", region: { node: () => listPad }, axis: "y", panSlop: 2,
     onDown: () => { if (!blocked()) { p.s.setFocus("library"); p.s.libraryScroll.beginDrag(); } },
     onPanMove: c => p.s.libraryScroll.drag(-c.fdy * 1.8),
@@ -183,7 +183,7 @@ function Deck(p: { s: Doc }) {
     title="Discard unsaved changes?" message="The document on Mac stays unchanged."
     actions={[{ label: "Discard Changes", tone: "danger", onPress: p.s.discard }]}
     cancelLabel="Keep Editing" onCancel={p.s.cancelDiscard} onModalChange={p.s.setSheetModal} />;
-  const deleteName = createMemo<string>((previous = "") => p.s.deleteTarget()?.title.slice(0, 42) ?? previous);
+  const deleteName = createMemo((previous: string) => p.s.deleteTarget()?.title.slice(0, 42) ?? previous, "");
   const deletion = <ClassicSheet debugName="DeleteSheet" surface="auxiliary" open={!!p.s.deleteTarget()}
     title="Delete document?" message={deleteName()}
     actions={[{ get label() { return p.s.removing() ? "Deleting..." : "Delete Document"; }, tone: "danger", get disabled() { return p.s.removing() || !p.s.online(); }, onPress: p.s.removeDocument }]}
@@ -219,8 +219,6 @@ function Deck(p: { s: Doc }) {
 export default function DocApp() {
   const s = createDoc();
   (globalThis as any).__doc = s;
-  // Replay imperative actions in the compiled guest's own Solid instance.
-  (globalThis as any).__docAct = (run: () => void) => { latest(run); flush(); };
   // These slot sets are fixed. Construct sibling subtrees before their pane
   // wrappers, so each mount returns before the next parent begins spreading
   // children. All reactive rows remain owned by the application root.
