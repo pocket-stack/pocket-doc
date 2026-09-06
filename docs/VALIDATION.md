@@ -42,9 +42,13 @@ files shrink from **937 to 891 physical lines** (46 fewer); the same files on
 main contained 893 lines. Notification lanes, version signals, the central
 Unicode demand scan and cache compatibility wrappers are removed. The frame
 mutation counts above are unchanged from the first extraction. No rendering
-speedup is claimed. The new native binary has not been
-installed on the 3DS. Existing screenshot/deployment records below describe the
-previously shipped demo. See [resource ownership](RESOURCES.md) for the API and
+speedup is claimed. The native binary was installed at `192.168.8.102:5000` with byte-exact FTP
+readback; its SHA-256 is
+`c6bfe4357ef70033bf7ff296b96bde462c6d0a7998226297f7f4ca17e0e40c7e`.
+The user confirmed physical operation on 2026-09-06. PocketJS main `066b8c5f`
+has the same tree as the validated `f53d474c` runtime. This acceptance does not
+supply a hardware frame-time benchmark. Older screenshot/deployment records
+below describe preceding builds. See [resource ownership](RESOURCES.md) for the API and
 application/provider responsibilities.
 
 ## Before the resource refactor
