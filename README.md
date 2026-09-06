@@ -14,17 +14,32 @@ under the ignored `data/library-v2/` directory and never overwrites existing
 files. The earlier `data/library/` fixture can remain beside it. Only bounded
 pages and visible rows cross the network.
 
-<img src="docs/read.png" width="400" alt="Pocket Doc reader and bottom-screen navigation" />
-<img src="docs/edit.png" width="400" alt="Source editing with keyboard and trackpad together" />
+## Screenshots
+
+Pocket Doc running on a real Nintendo 3DS, connected to a Mac over Wi-Fi:
+
+<img src="docs/hardware-reader.jpg" width="420" alt="Pocket Doc on a real Nintendo 3DS: Markdown on the upper screen and independent Files and Document touchpads below" />
+
+These simulator captures run the compiled application with the PocketJS Wasm
+renderer. Each image shows the upper screen above the lower touch screen.
+
+| Browse the library | Edit Markdown | Read highlighted code |
+| --- | --- | --- |
+| <img src="docs/read.png" width="260" alt="File list and rendered Markdown above two independent scrolling pads" /> | <img src="docs/edit.png" width="260" alt="Source editor above a touch keyboard, selection controls and scrolling pads" /> | <img src="docs/code.png" width="260" alt="Syntax-highlighted code in the Markdown reader" /> |
+
+| Tables | New document | File commands |
+| --- | --- | --- |
+| <img src="docs/table.png" width="260" alt="A Markdown table rendered with aligned cells" /> | <img src="docs/new-document.png" width="260" alt="Filename dialog with the touch keyboard ready to create a Markdown document" /> | <img src="docs/menu.png" width="260" alt="The L shoulder menu with New document, Open, Search, Refresh and Delete commands" /> |
+
+See [validation receipts](docs/VALIDATION.md) for capture provenance and checks.
 
 ## Run
 
 Use the 3DS build prerequisites described by the pinned runtime's
 `hosts/3ds/README.md` (Rust toolchain, QuickJS sources and devkitARM container).
-The initial implementation is on `feat/markdown-library` while its PR is Draft.
 
 ```sh
-git clone --branch feat/markdown-library --recursive https://github.com/pocket-stack/pocket-doc.git
+git clone --recursive https://github.com/pocket-stack/pocket-doc.git
 cd pocket-doc
 bun install --cwd runtime --frozen-lockfile
 bun scripts/setup.ts
