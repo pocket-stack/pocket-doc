@@ -15,7 +15,8 @@ create and save checks never write the paired Mac's live library.
   runtime contracts. They cover recording/replaying the optional right stick,
   deadzones and centering when a host or older tape omits it. TypeScript and
   generated contract checks pass.
-- TypeScript and the compiled production guest pass with runtime **6bbb4a92**.
+- The deployed demo was built with runtime **6bbb4a92**. The application now
+  pins merged PocketJS main **39be3a19**; the merge checks below cover that pin.
   **839 QuickJS frames at a 128 KiB stack** cover startup, resource errors and
   retry, Unicode input, discard cancellation, filename-dialog creation, and delete confirmation/cancellation.
 - **3,231 compiled-guest frames and 93 behavioral checks** pass with four-frame
@@ -26,12 +27,16 @@ create and save checks never write the paired Mac's live library.
   6px spacing, short-file and empty-result rendering, and touch-confirmed deletion
   with lost-acknowledgement recovery.
   Requests stay within four and document textures/resource slots within 72.
-- The ARM capture completes both upper and lower screen readbacks. The 3DS
-  QuickJS stack limit remains **192 KiB**. The production build excludes capture
+- The ARM capture completes both upper and lower screen readbacks. The installed
+  build used a **192 KiB** QuickJS stack; merged main uses
+  **384 KiB** after an independent host fix. The production build excludes capture
   code. Capture proves native startup; it does not prove physical interactions
   or frame-time performance.
 
-The images beside this file are compiled-app simulation captures. Run
+The PNG images beside this file are compiled-app simulation captures.
+`hardware-reader.jpg` is a cropped frame at 00:10 from the real-device
+recording `IMG_7011.MOV`, tone-mapped from HLG to BT.709. The recording shows
+browsing, editing, creating `hello.md`, and opening it in Finder on the Mac. Run
 `bun scripts/sim.ts` to refresh them and `dist/qa/sim.json` after building the
 guest and the runtime Wasm artifact. Only the QA directory is replaced.
 
@@ -47,8 +52,10 @@ The preceding whole-document build (1,688,560 bytes, SHA-256
 and app-scoped pairing key were installed with byte-exact FTP readback.
 The restarted provider received a fresh device connection and frame telemetry;
 the user subsequently confirmed the interaction improvements. The live library
-was opened in Finder for inspection. Physical interaction and frame-time
-acceptance of the new revision remain pending.
+was opened in Finder for inspection. After the network changed, the matching
+provider reconnected at 192.168.8.102 and received fresh frame telemetry.
+The subsequent real-device recording demonstrates browsing, editing and file
+creation on this revision. Sustained frame-time acceptance remains pending.
 
 ## Physical device
 
@@ -223,3 +230,19 @@ an FTP directory check confirms that `/3DS/pocketdoc-main.3dsx` is present and
 the old launcher is absent. The matching Mac provider is running against
 `data/library-v2/`. The local receipt is `dist/qa/deploy.json`. Physical relaunch
 and interaction acceptance of this revision remain pending.
+
+## Main-branch integration
+
+PocketJS #362 merged as `39be3a197e70398e5b5d6560f23bb3caf56aaecb`. The runtime
+submodule points to that main-branch commit. README screenshot links use tracked
+assets and distinguish the real-device photo from compiled-app simulator captures.
+The run instructions clone the default branch. The installed handheld binary
+remains the separately verified demo build described above.
+
+On this merged runtime pin, all **28 application tests (671 assertions)**,
+TypeScript and the production guest build pass. The QuickJS smoke executes
+**839 frames at a 128 KiB stack**. A freshly rebuilt Wasm renderer passes
+**3,231 replay frames and 93 behavioral checks** against the isolated QA library.
+The full native ARM build also passes using the pinned `nightly-2026-07-02`
+toolchain, with `~/.cargo/bin` before Homebrew Rust on `PATH`. This integration
+binary has not replaced the installed demo binary.
