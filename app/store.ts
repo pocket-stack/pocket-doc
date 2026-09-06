@@ -1,12 +1,13 @@
 import { batch, createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
 import { createCaretBlink } from "@pocketjs/framework/animation";
 import { offload } from "@pocketjs/framework/offload";
-import { createResourceSlot, pending, ready, type ResourceState } from "@pocketjs/framework/resource-state";
+import { pending, ready, type ResourceState } from "@pocketjs/framework/resource-state";
 import { onFrame, rightAnalogX, rightAnalogY } from "@pocketjs/framework/lifecycle";
 import { BTN } from "@pocketjs/framework/input";
 import { createScroller, bindDpadScroll } from "@pocketjs/framework/kinetics";
 import { getOps } from "@pocketjs/framework/host";
-import { textTileKey, uploadLine } from "./tiles.ts";
+import { textTileKey } from "./tiles.ts";
+import { createDocResources, tileDemand, type TileInput } from "./resources.ts";
 import { moveSourceCaret, sourceAdvance, sourceLayout, sourceWindow } from "./editor.ts";
 import { createEditHistory, type EditSnapshot } from "./history.ts";
 import { createRowChanges } from "./window.ts";
@@ -62,11 +63,20 @@ export function createDoc() {
   const [caretDragging, setCaretDragging] = createSignal(false);
   const [textVersion, setTextVersion] = createSignal(0);
   const fileChanges = createRowChanges(), rowChanges = createRowChanges();
-  const tiles = new Map<number, Tile>();
-  const tileResources = new Map<number, ReturnType<typeof createResourceSlot<Tile>>>();
-  const rowSpecs = new Map<number, RowSpec>();
-  const files = new Map<number, FileRow>();
-  const textTiles = new Map<string, number>();
+  const resources = createDocResources(io, {
+    files: first => { for (let n = 0; n < 12; n++) fileChanges.notify(first + n); },
+    rows: first => { for (let n = 0; n < 12; n++) rowChanges.notify(first + n); },
+    tile: row => rowChanges.notify(row), text: () => setTextVersion(v => v + 1),
+  });
+  const rowSpecs = { get: (row: number) => doc() ? resources.row(doc()!, row) : undefined };
+  const tileInput = (row: number): TileInput => ({ id: doc()?.id ?? 0, revision: doc()?.revision ?? "", layout: doc()?.layout ?? "", row,
+    x: rowSpecs.get(row)?.code ? codeOffset(rowSpecs.get(row)!.code!.block) : 0 });
+  const tiles = {
+    get: (row: number) => { const state = resources.tiles.state(tileInput(row)); return state.status === "ready" ? state.value : undefined; },
+    has: (row: number) => resources.tiles.state(tileInput(row)).status === "ready",
+    get size() { return resources.tiles.stats().ready; },
+  };
+  const files = { get: (index: number) => resources.file(query(), index), has: (index: number) => !!resources.file(query(), index), clear: resources.lists.clear };
   const sourceCellWidth = getOps().measureText("M", SOURCE_FONT_SLOT);
   const sourceWidth = (text: string) => sourceAdvance(text, sourceCellWidth);
   const rowsOf = (text: string, hasMore: boolean) => {
@@ -121,19 +131,16 @@ export function createDoc() {
   const activeScroll = () => focus() === "library" ? libraryScroll : scroll;
   bindDpadScroll(scroll, { active: () => !sheetModal() && !menu() && focus() === "document" && mode() === "read", stepPx: 7, nubPx: 12 });
   bindDpadScroll(libraryScroll, { active: () => !sheetModal() && !menu() && focus() === "library", stepPx: 0, nubPx: 12 });
-  const clearPending = () => { generation++; for (const id of inflight.values()) io.cancel(id); inflight.clear(); };
+  const clearPending = () => { resources.scheduler.cancel(); generation++; for (const id of inflight.values()) io.cancel(id); inflight.clear(); };
   const cancelSpatial = (pane?: "library" | "document") => {
-    for (const [key, id] of inflight) {
-      if (key.startsWith("text:") || (pane !== "document" && key.startsWith("list:")) ||
-          (pane !== "library" && (key.startsWith("tile:") || key.startsWith("window:")))) {
-        io.cancel(id); inflight.delete(key);
-      }
-    }
+    resources.text.cancel();
+    if (pane !== "document") resources.lists.cancel();
+    if (pane !== "library") { resources.tiles.cancel(); resources.windows.cancel(); }
   };
   const request = (key: string, method: string, data: unknown, receive: (p: any) => void, fail?: (reason: string) => void) => {
     // User commands can replace speculative reads, including when all slots are occupied.
-    if (!/^(list:|text:|tile:|window:)/.test(key) && inflight.size >= 4) cancelSpatial();
-    if (!online() || inflight.has(key) || inflight.size >= 4 || ticks < retryAt) return false;
+    if (io.pending() >= 4) cancelSpatial();
+    if (!online() || inflight.has(key) || io.pending() >= 4 || ticks < retryAt) return false;
     const gen = generation;
     let id = 0;
     try {
@@ -150,17 +157,15 @@ export function createDoc() {
   };
   const clearTiles = () => {
     codeOffsets.clear(); setCodeVersion(v => v + 1);
-    for (const tile of tiles.values()) getOps().freeTexture?.(tile.handle);
-    for (const resource of tileResources.values()) resource.dispose();
-    tiles.clear(); tileResources.clear(); rowSpecs.clear(); rowChanges.clear();
+    resources.tiles.clear(); resources.windows.clear(); rowChanges.clear();
   };
-  const list = (offset = 0, refresh = false) => request(`list:${offset}`, refresh ? "library.refresh" : "library.list", { offset, query: query() }, p => {
-    setTotal(p.total); setLibraryReady(true);
-    for (let i = 0; i < p.rows.length; i++) { files.set(offset + i, p.rows[i]); fileChanges.notify(offset + i); }
-    while (files.size > 96) { const old = files.keys().next().value!; files.delete(old); fileChanges.notify(old); }
-
-    if (!doc() && p.rows[0] && mode() !== "search") open(files.get(selected())?.id ?? p.rows[0].id, false, false);
-  });
+  const list = (offset = 0, refresh = false) => {
+    if (refresh) return request("refresh", "library.refresh", { offset, query: query() }, () => {
+      resources.lists.clear(); setLibraryReady(false);
+    });
+    resources.lists.reconcile([{ input: { offset, query: query() }, priority: 0, pin: true }]);
+    return true;
+  };
   const open = (id: number, preserve = false, focusAfter = true) => {
     if (dirty() || pendingSeek) { setStatus("Save or discard the current draft first"); return; }
     clearPending();
@@ -403,7 +408,7 @@ export function createDoc() {
       case "search": setMode("search"); setFocus("library"); break;
       case "undo": if (mode() === "edit" && draft() && !saving()) { const value = history.undo(snapshot()); if (value) restore(value); else if (draft()!.text === cleanText) wantWindow = { history: -1 }; } break;
       case "redo": if (mode() === "edit" && draft() && !saving()) { const value = history.redo(snapshot()); if (value) restore(value); else if (draft()!.text === cleanText) wantWindow = { history: 1 }; } break;
-      case "refresh": clearPending(); files.clear(); fileChanges.clear(); setLibraryReady(false); retryAt = 0; list(Math.floor(firstFile() / 12) * 12, true); break;
+      case "refresh": resources.tiles.invalidate(); resources.windows.invalidate(); resources.text.invalidate(); clearPending(); files.clear(); fileChanges.clear(); setLibraryReady(false); retryAt = 0; list(Math.floor(firstFile() / 12) * 12, true); break;
       case "edit": edit(); break;
       case "read": setMode("read"); setSelecting(false); setAnchor(caret()); setCaretDragging(false); setStatus(dirty() ? "Draft retained; tap Edit to continue" : "L: Files   R: Document"); break;
       case "save": save(); break;
@@ -447,7 +452,7 @@ export function createDoc() {
     ticks++; setOnline(io.connected());
     const session = io.session();
     if (session > 0 && session !== lastSession) {
-      lastSession = session; clearPending(); files.clear(); fileChanges.clear(); setLibraryReady(false); retryAt = 0; setSaving(false); saveWanted = false; setCreating(false); setRemoving(false);
+      lastSession = session; resources.tiles.invalidate(); resources.windows.invalidate(); resources.text.invalidate(); clearPending(); files.clear(); fileChanges.clear(); setLibraryReady(false); retryAt = 0; setSaving(false); saveWanted = false; setCreating(false); setRemoving(false);
       setStatus(dirty() ? "Reconnected - draft retained" : "L: Library   R: Document");
       const current = doc();
       if (current && !deleteTarget()) request("revalidate", "document.open", { id: current.id }, p => {
@@ -531,67 +536,36 @@ export function createDoc() {
     if (discardToken()) { const token = discardToken(); request("discard", "draft.discard", { token }, () => { if (discardToken() === token) setDiscardToken(undefined); }); }
     pumpEditor();
     const firstFile = Math.max(0, Math.floor(libraryScroll.offset() / FILE_H)), page = Math.floor(firstFile / 12) * 12;
-    if (!libraryReady() || firstFile < total() && !files.has(firstFile)) list(page);
-    if (total() > page + 12 && !files.has(page + 12)) list(page + 12);
-    for (const line of visibleText()) {
-      if (textTiles.has(line.key) || inflight.size >= 4) continue;
-      if (request(`text:${line.key}`, "text.tile", { text: line.text, cellWidth: sourceCellWidth }, p => {
-        const handle = uploadLine(p.mask, 3, line.inverse); if (handle < 0) return;
-        textTiles.set(line.key, handle);
-        while (textTiles.size > 20) { const key = textTiles.keys().next().value!; getOps().freeTexture?.(textTiles.get(key)!); textTiles.delete(key); }
-        setTextVersion(v => v + 1);
-      })) break;
+    const pages = [{ input: { query: query(), offset: page }, priority: 0, pin: true }];
+    if (total() > page + 12) pages.push({ input: { query: query(), offset: page + 12 }, priority: 1, pin: true });
+    resources.lists.reconcile(pages);
+    const listing = resources.lists.state(pages[0].input);
+    if (listing.status === "ready") {
+      setTotal(listing.value.total); setLibraryReady(true);
+      if (!doc() && !inflight.has("open") && listing.value.rows[0] && mode() !== "search") open(files.get(selected())?.id ?? listing.value.rows[0].id, false, false);
     }
-    const d = doc(); if (!d || mode() === "edit") return;
-    const first = Math.max(0, Math.floor(scroll.offset() / LINE_H));
-    const metadata = Math.floor(first / 12) * 12;
-    for (const from of [metadata, metadata + 12]) {
-      if (from >= d.rows || rowSpecs.has(from)) continue;
-      request(`window:${from}`, "document.window", { id: d.id, revision: d.revision, layout: d.layout, first: from }, specs => {
-        for (const spec of specs) { rowSpecs.set(spec.row, spec); rowChanges.notify(spec.row); }
-        while (rowSpecs.size > 96) { const old = rowSpecs.keys().next().value!; rowSpecs.delete(old); rowChanges.notify(old); }
-
-      });
-    }
-    let issued = 0;
-    for (let n = 0; n < 60 && inflight.size < 4 && issued < 2; n++) {
-      const row = n < 12 ? first + n : lastDirection >= 0 ? (n < 44 ? first + n : first - (n - 43)) : (n < 44 ? first - (n - 11) : first + n - 32);
-      const x = rowSpecs.get(row)?.code ? codeOffset(rowSpecs.get(row)!.code!.block) : 0;
-      if (row < 0 || row >= d.rows || tiles.get(row)?.x === x || inflight.has(`tile:${row}`)) continue;
-      const resource = tileResources.get(row) ?? createResourceSlot<Tile>(() => rowChanges.notify(row));
-      let ticket = 0;
-      if (request(`tile:${row}`, "document.tile", { id: d.id, revision: d.revision, layout: d.layout, row, x }, p => {
-        const handle = uploadLine(p.mask, p.kind, false, p.colors);
-        if (handle < 0) { resource.reject(ticket, "Texture unavailable"); return; }
-        const tile = { handle, kind: p.kind, start: p.start, x: p.x ?? 0 };
-        if (!resource.resolve(ticket, tile)) { getOps().freeTexture?.(handle); return; }
-        const previous = tiles.get(row); tiles.set(row, tile); if (previous) getOps().freeTexture?.(previous.handle);
-
-      }, error => resource.reject(ticket, error))) {
-        tileResources.set(row, resource); ticket = resource.begin(); issued++;
-        while (tileResources.size > 72) {
-          let victim = -1, distance = -1;
-          const center = Math.floor(scroll.offset() / LINE_H) + 5;
-          for (const candidate of tileResources.keys()) if (!inflight.has(`tile:${candidate}`) && Math.abs(candidate - center) > distance) { victim = candidate; distance = Math.abs(candidate - center); }
-          if (victim < 0) break;
-          const old = tiles.get(victim); if (old) getOps().freeTexture?.(old.handle);
-          tiles.delete(victim); tileResources.get(victim)?.dispose(); tileResources.delete(victim);
-          rowChanges.notify(victim);
-        }
-
-      }
-    }
+    resources.text.reconcile(visibleText().map(line => ({ input: { text: line.text, inverse: line.inverse, cellWidth: sourceCellWidth }, priority: 2, pin: true })));
+    const d = doc();
+    if (!d || mode() === "edit") { resources.windows.reconcile([]); resources.tiles.reconcile([]); return; }
+    const first = Math.max(0, Math.floor(scroll.offset() / LINE_H)), metadata = Math.floor(first / 12) * 12;
+    resources.windows.reconcile([metadata, metadata + 12].filter(from => from < d.rows).map(from => ({
+      input: { id: d.id, revision: d.revision, layout: d.layout, first: from }, priority: 1, pin: true,
+    })));
+    resources.tiles.reconcile(tileDemand({ id: d.id, revision: d.revision, layout: d.layout }, first, d.rows, lastDirection,
+      row => rowSpecs.get(row)?.code ? codeOffset(rowSpecs.get(row)!.code!.block) : 0));
   });
-  onCleanup(() => { clearPending(); clearTiles(); for (const handle of textTiles.values()) getOps().freeTexture?.(handle); });
+  onFrame(() => resources.scheduler.step());
+  onCleanup(() => { clearPending(); resources.scheduler.dispose(); });
   return {
     mode, setMode, focus, setFocus, menu, commandIndex, canAction, sheetModal, setSheetModal, historySizes, historyBusy, status, online, total, libraryReady, deleteTarget, removing, removeDocument, cancelDelete, textVersion, doc, draft, caret, query, shift, symbols, selected, setSelected,
     newName, creating, createDocument, cancelCreate, seeking, seekEditor, discardToken, codeOffset, firstCode, editorBase, editorTotal, caretX, firstRow, firstFile, source, sourceCellWidth, sourceWidth, editorFirst, editorScroll, caretRow, caretVisible, caretDragging, setCaretDragging, dragCaret,
-    tiles, rowSpecs, files, textTiles, editorRows, sourceLines, scroll, libraryScroll, activeScroll, dirty, saving, selecting, selection, confirmDiscard,
+    tiles, rowSpecs, files, editorRows, sourceLines, scroll, libraryScroll, activeScroll, dirty, saving, selecting, selection, confirmDiscard,
     key, moveCaret, save, search, activate, edit, jump, open, nextHeading, followLink, toggleSelect, perform, discard, cancelDiscard,
     rowSpec: (row: number) => { rowChanges.read(row); return rowSpecs.get(row); },
-    rowResource: (row: number): ResourceState<Tile> => { rowChanges.read(row); return tiles.has(row) ? ready(tiles.get(row)!) : tileResources.get(row)?.state() ?? pending(); },
+    rowResource: (row: number): ResourceState<Tile> => { rowChanges.read(row); return resources.tiles.state(tileInput(row)); },
     fileResource: (index: number): ResourceState<FileRow> => { fileChanges.read(index); const file = files.get(index); return file ? ready(file) : pending(); },
-    diagnostics: () => ({ cachedTiles: tiles.size, resourceSlots: tileResources.size, pending: inflight.size, offset: scroll.offset(), frame: ticks, sourceChars: draft()?.text.length ?? 0, deferredKeys: deferredKeys.length }),
+    textResource: (text: string, inverse = false): ResourceState<number> => { textVersion(); return resources.text.state({ text, inverse, cellWidth: sourceCellWidth }); },
+    diagnostics: () => ({ cachedTiles: tiles.size, textTiles: resources.text.stats().ready, resourceSlots: resources.tiles.stats().entries, pending: io.pending(), offset: scroll.offset(), frame: ticks, sourceChars: draft()?.text.length ?? 0, deferredKeys: deferredKeys.length }),
   };
 }
 export type Doc = ReturnType<typeof createDoc>;

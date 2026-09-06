@@ -6,7 +6,6 @@ import { createGesture, pushTouchBlock } from "@pocketjs/framework/gesture";
 import { ClassicButton, ClassicFace, ClassicPanel, ClassicSheet, classicPalette } from "@pocketjs/framework/classic";
 import { createDoc, type Doc } from "./store.ts";
 import { BANKS, type Bank } from "./commands.ts";
-import { textTileKey } from "./tiles.ts";
 import { BODY_W, FILE_H, LINE_H } from "../shared/layout.ts";
 import { ROW_SLOTS, slotRow } from "./window.ts";
 const SLOTS = Array.from({ length: ROW_SLOTS }, (_, i) => i);
@@ -26,8 +25,8 @@ function AsyncText(p: { s: Doc; value: () => string; width: number; size?: "smal
   return <View class="relative h-[18] overflow-hidden" style={{ width: p.width }}>
     <Show when={unicode()} fallback={<Text class={p.mono ? "absolute left-0 top-0 text-xs font-mono" : p.size === "small" ? "absolute left-0 top-0 text-xs" : "absolute left-0 top-0 text-sm"} style={{ textColor: p.inverse ? 0xffffffff : 0xff2e2722 }}>{p.value()}</Text>}>
       <ResourceImage class="relative h-[16] overflow-hidden" style={{ width: p.width }} state={() => {
-        p.s.textVersion(); const handle = p.s.textTiles.get(textTileKey(p.value(), p.inverse));
-        return handle === undefined ? pending<TextureResource>() : ready({ handle, width: BODY_W, height: 16 });
+        const state = p.s.textResource(p.value(), p.inverse);
+        return state.status === "ready" ? ready({ handle: state.value, width: BODY_W, height: 16 }) : state;
       }} fallback={() => <Skeleton width={Math.max(12, p.width - 12)} />} />
     </Show>
   </View>;

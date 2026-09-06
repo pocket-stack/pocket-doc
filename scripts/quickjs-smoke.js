@@ -57,7 +57,7 @@ try {
   frames(1,0x0200); frames(1,0x0200|0x0040); frames(1,0x0200); frames(1,0x0200|0x2000); frames(40);
   check(s.mode()==="edit" && s.caret()===0, "editor chord leaked a plain A press");
   s.key("中"); frames(20);
-  check(s.dirty() && s.textTiles.size>0, "Unicode source resource failed");
+  check(s.dirty() && s.diagnostics().textTiles>0, "Unicode source resource failed");
   const draft=s.draft().text; session=-1; frames(20);
   s.perform("discard"); frames(1); check(s.confirmDiscard(), "discard sheet missing");
   s.cancelDiscard(); frames(14); check(s.draft().text===draft, "cancel discarded the draft");
