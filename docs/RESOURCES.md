@@ -1,77 +1,117 @@
-# Shared resources
+# Resources and views
 
-Pocket Doc now uses PocketJS resource collections for file pages, Markdown
-geometry, rendered document bands and source-text textures. **The app declares
-identity, demand and decoding; the framework owns admission, cancellation,
-retry, cache eviction and texture disposal.** The Mac still owns files, SQLite,
-Markdown layout, syntax highlighting and glyph rasterization.
+Pocket Doc uses PocketJS resource collections for file pages, Markdown geometry,
+rendered document bands and Unicode text textures. **The app declares identity,
+demand and decoding; PocketJS owns scheduling, subscriptions and cleanup.** The
+Mac owns files, SQLite, Markdown layout, syntax highlighting and rasterization.
+Solid remains at **1.9.14**. No Solid 2 migration is included.
 
-## Read ownership
+## Define once, consume from independent views
 
-The previous store kept request maps, stale-response tickets, eviction loops
-and texture handles for each read type. A row miss could trigger a request
-from app-specific code. The replacement declares each collection once:
+The application creates one resource runtime with four active requests, two
+starts and one materialization per frame. The runtime registers its frame hook
+on mount and disposes collections with its Solid owner. Texture collections
+declare `materialize` and `dispose` once. `maxViews` bounds consumers and
+`maxDemandsPerView` bounds each consumer's demand; entry and byte limits bound
+resident values independently of that union.
 
-```ts
-import { createResourceScheduler } from "@pocketjs/framework/resource-cache";
-import { offloadResource } from "@pocketjs/framework/resource-offload";
+| Collection | Entries | Views | Identity |
+| --- | ---: | ---: | --- |
+| File pages | 8 | 2 | Query and page offset |
+| Layout windows | 8 | 2 | Document ID, revision, layout and first row |
+| Markdown bands | 72 | 2 | Document ID, revision, layout, row and horizontal offset |
+| Unicode text | 20 | 32 | Text, inverse state and cell width |
 
-const scheduler = createResourceScheduler({
-  maxConcurrent: 4, startsPerFrame: 2, completionsPerFrame: 1,
-  maxCollections: 4,
-  available: () => io.connected() && io.pending() < 4,
+Each Unicode text component creates its own view with at most one demand:
+
+```tsx
+import { createResourceView } from "@pocketjs/framework/resource-view";
+import { ResourceImage } from "@pocketjs/framework/resource";
+
+const input = () => ({
+  text: props.value(), inverse: !!props.inverse,
+  cellWidth: props.store.sourceCellWidth,
 });
-const tiles = scheduler.createCache({
-  key: p => `${p.id}/${p.revision}/${p.layout}/${p.row}/${p.x}`,
-  maxEntries: 72, maxCost: 72 * 40960,
-  maxResponseBytes: 5000, cost: () => 40960,
-  load: offloadResource(io, "document.tile", JSON.stringify),
-  materialize: decodeAndUploadOneTile,
-  dispose: tile => ops.freeTexture(tile.handle),
-  changed: p => notifyRow(p.row),
+const view = createResourceView(props.store.text, {
+  demand: () => props.active() && unicode()
+    ? [{ input: input(), priority: 2, pin: true }]
+    : [],
 });
+
+<ResourceImage state={() => view.state(input())}
+  fallback={() => <Skeleton />} />
 ```
 
-The example omits app-specific types and decoder definitions; the complete
-implementation is [app/resources.ts](../app/resources.ts). Texture reservations
-include both old and replacement RGBA handles plus bounded wire data. A
-response can arrive between frames, but decoding/upload waits for `step()`.
+The snippet abbreviates component props and layout. See
+[app/app.tsx](../app/app.tsx) and [app/resources.ts](../app/resources.ts).
+Identical labels in separate components share one value and request. Unmounting
+one component removes only its demand. A mounted but clipped row returns empty
+demand; the app retains its viewport and fixed rendering-slot rules.
 
-Each frame replaces the bounded working set with `reconcile(demands)`, then
-calls `scheduler.step()`. Reading `state(input)` never starts IO. The planner
-pins visible rows and assigns lower priority to directional prefetch. Missing
-or failed entries render the app's skeleton/error subtree through
-`ResourceBoundary` or `ResourceImage`. Ready textures outside the working set
-can remain cached until admission needs their space. Stale replies cannot
-allocate textures after cancellation, invalidation or disposal.
+Document and file views use the same API with a larger demand set. File pages
+project to individual rows with `view.state(pageInput, page => page.rows[index])`;
+page failures remain errors. `view.value(input)` supports optional geometry.
+Document and text textures return the `ResourceImage` shape directly, removing
+the previous handle-to-image state wrappers.
 
-| Collection | Entry bound | Identity |
-| --- | ---: | --- |
-| File pages | 8 | Query and page offset |
-| Layout windows | 8 | Document ID, revision, layout and first row |
-| Markdown bands | 72 | Document ID, revision, layout, row and horizontal offset |
-| Source text | 20 | Text, inverse state and cell width |
+**Reads subscribe by key without initiating IO.** Demand is evaluated at the
+frame boundary. Only consumers of a changed key are notified; changes to a
+view's key set update its membership subscribers. A view reads pending for keys
+outside its last planned demand. Queued responses hold shared concurrency credit
+until bounded decoding/upload. Oversubscribed views remain pending within the
+existing cache budgets. Texture reservations include old and replacement handles.
 
-The cache instance belongs to one app/provider session. Reconnection invalidates
-its reads. Refresh and document changes invalidate the affected collections.
-The store retains geometry, row-slot notifications, viewport planning and the
-editable source window because these are document UI rules.
+## Application code before and after
 
-**Save, delete, create and draft commands bypass the read scheduler.** They keep
-explicit operation IDs, acknowledgement handling and the provider's SQLite
-journal. A resource retry does not replay a command or change its durability.
-Local typing still updates the draft before a network reply; non-ASCII texture
-refresh and fetching an unloaded source window still require the Mac.
+The first extraction moved request tickets and eviction into the framework but
+retained manual notification maps and cache-shaped store wrappers:
 
-## Runtime and verification
+```ts
+// Before: definition, controller and reader each participate in notification.
+changed: input => changes.tile(input.row)
+tile: row => rowChanges.notify(row)
+rowResource: row => {
+  rowChanges.read(row);
+  return resources.tiles.state(tileInput(row));
+}
+```
 
-This resource refactor runs on the main branch's **Solid 1.9.14** dependency.
-Effects, `batch`, renderer ownership and host frame delivery keep their existing
-contracts. The cache scheduler is independent of Solid and can be reused through
-PocketJS's other framework entrypoints.
+The scoped adapter removes that connection code:
 
-Read admission, retries and texture disposal now have one implementation. These
-are resource ownership and work-budget changes; they do not establish faster
-physical frame times. See [validation receipts](VALIDATION.md) for the current
-application checks and bundle cost. The QuickJS smoke check uses **128 KiB**,
-while the native 3DS host remains at 384 KiB.
+```ts
+const tiles = createResourceView(resources.tiles, {
+  demand: () => tileDemand(doc(), firstRow(), rowCount(), direction(), x),
+});
+const rowResource = row => tiles.state(tileInput(row));
+```
+
+The snippets omit application-specific types and guard branches. The final
+migration removes `createRowChanges`, manual version signals, the central scan
+of Unicode text, `get/has` compatibility wrappers, explicit read reconciliation
+and the store's scheduler step/disposal hook. Local draft editing, command
+acknowledgement and viewport selection remain in the application.
+
+| Affected application files, physical lines | Before extraction | First extraction | Scoped views |
+| --- | ---: | ---: | ---: |
+| `app.tsx`, `resources.ts`, `store.ts`, `window.ts` combined | 893 | 937 | 891 |
+
+The scoped migration removes **46 net application lines** from the first
+extraction (`8b42d0e`), including its new view declarations. Compared with main
+before extraction (`8cae6a6`), these files contain two fewer lines while using
+shared scheduling and owner cleanup. Other application files are unchanged.
+This counts source lines, including comments and blank lines; it does not count
+documentation, tests or the runtime submodule as application savings.
+
+## Commands and recovery
+
+**Save, delete, create and draft commands bypass the read scheduler.** They retain
+operation IDs, acknowledgement handling and the provider's SQLite journal.
+Resource retries never replay a command. Local typing still updates the draft
+before a network reply. Fetching unloaded source and rasterizing Unicode text
+still require the paired Mac.
+
+Reconnection invalidates read collections; mutations retain their existing
+recovery rules. Completion delivery follows arrival order across collections.
+An admission refusal skips that key for the frame without resetting accumulated
+failures or preventing healthy loaders from starting. See
+[validation receipts](VALIDATION.md) for tests, build sizes and limits.

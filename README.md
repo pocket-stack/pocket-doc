@@ -177,7 +177,7 @@ encoded inside a bounded offload reply. The 3DS uploads it through the framework
 native coverage decoder and retains at most **72 document resources/textures**
 plus **20 small text textures** and 96 file/row metadata entries per cache.
 There are twelve mounted rows per pane. Each physical slot follows its row until
-it leaves the viewport; crossing one row reassigns one slot. Per-slot notifications
+it leaves the viewport; crossing one row reassigns one slot. Framework per-key subscriptions
 keep arriving resources from invalidating the whole view. Row movement uses
 paint transforms. Scrolling uses
 PocketJS `createScroller`, the same kinetic state machine as the Contacts demo.

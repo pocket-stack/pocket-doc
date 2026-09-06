@@ -1,12 +1,13 @@
 import { DECK, deckLayout, keyboardBottom } from "./deck.ts";
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { AuxiliarySurface, Image, Text, View, type NodeMirror } from "@pocketjs/framework/components";
-import { ResourceBoundary, ResourceImage, pending, ready, type TextureResource } from "@pocketjs/framework/resource";
+import { ResourceBoundary, ResourceImage } from "@pocketjs/framework/resource";
+import { createResourceView } from "@pocketjs/framework/resource-view";
 import { createGesture, pushTouchBlock } from "@pocketjs/framework/gesture";
 import { ClassicButton, ClassicFace, ClassicPanel, ClassicSheet, classicPalette } from "@pocketjs/framework/classic";
 import { createDoc, type Doc } from "./store.ts";
 import { BANKS, type Bank } from "./commands.ts";
-import { BODY_W, FILE_H, LINE_H } from "../shared/layout.ts";
+import { FILE_H, LINE_H } from "../shared/layout.ts";
 import { ROW_SLOTS, slotRow } from "./window.ts";
 const SLOTS = Array.from({ length: ROW_SLOTS }, (_, i) => i);
 const LETTERS = ["q w e r t y u i o p", "a s d f g h j k l DEL", "SHIFT z x c v b n m , .", "#+= / - SPACE ENTER"];
@@ -20,14 +21,14 @@ function Skeleton(p: { width?: number; columns?: number[] }) {
   </View>;
 }
 
-function AsyncText(p: { s: Doc; value: () => string; width: number; size?: "small" | "normal"; mono?: boolean; inverse?: boolean }) {
+function AsyncText(p: { s: Doc; value: () => string; active: () => boolean; width: number; size?: "small" | "normal"; mono?: boolean; inverse?: boolean }) {
   const unicode = () => /[^\x00-\x7f]/.test(p.value());
+  const input = () => ({ text: p.value(), inverse: !!p.inverse, cellWidth: p.s.sourceCellWidth });
+  const view = createResourceView(p.s.text, { demand: () => p.active() && unicode() ? [{ input: input(), priority: 2, pin: true }] : [] });
   return <View class="relative h-[18] overflow-hidden" style={{ width: p.width }}>
     <Show when={unicode()} fallback={<Text class={p.mono ? "absolute left-0 top-0 text-xs font-mono" : p.size === "small" ? "absolute left-0 top-0 text-xs" : "absolute left-0 top-0 text-sm"} style={{ textColor: p.inverse ? 0xffffffff : 0xff2e2722 }}>{p.value()}</Text>}>
-      <ResourceImage class="relative h-[16] overflow-hidden" style={{ width: p.width }} state={() => {
-        const state = p.s.textResource(p.value(), p.inverse);
-        return state.status === "ready" ? ready({ handle: state.value, width: BODY_W, height: 16 }) : state;
-      }} fallback={() => <Skeleton width={Math.max(12, p.width - 12)} />} />
+      <ResourceImage class="relative h-[16] overflow-hidden" style={{ width: p.width }} state={() => view.state(input())}
+        fallback={() => <Skeleton width={Math.max(12, p.width - 12)} />} />
     </Show>
   </View>;
 }
@@ -42,7 +43,7 @@ function LibraryRow(p: { s: Doc; slot: number }) {
     <ResourceBoundary state={() => p.s.fileResource(index())} fallback={() => <View class="absolute left-[6] top-[4] w-[110] h-[16]"><Skeleton width={96 - p.slot % 3 * 12} /></View>}>
       {file => <>
         <Show when={p.s.doc()?.id === file().id}><View class="absolute left-0 top-[3] bottom-[3] w-[3] bg-[#397cca]" /></Show>
-        <View class="absolute left-[7] top-[5]"><AsyncText s={p.s} value={() => file().title.slice(0, 17)} width={114} size="small" inverse={selected()} /></View>
+        <View class="absolute left-[7] top-[5]"><AsyncText s={p.s} value={() => file().title.slice(0, 17)} active={() => index() < p.s.firstFile() + 9 && index() < p.s.total()} width={114} size="small" inverse={selected()} /></View>
       </>}
     </ResourceBoundary>
   </View>;
@@ -60,10 +61,8 @@ function DocumentRow(p: { s: Doc; slot: number }) {
       <For each={spec()?.columns}>{(_, index) => <View class="absolute top-0 bottom-0 w-[1] bg-[#c7d0dc]" style={{ insetL: spec()!.columns!.slice(0, index()).reduce((a, b) => a + b, 0) }} />}</For>
       <View class="absolute right-0 top-0 bottom-0 w-[1] bg-[#c7d0dc]" />
     </Show>
-    <ResourceImage class="absolute left-0 top-[2] w-[256] h-[16] overflow-hidden" style={{ translateX: spec()?.code ? (resource().status === "ready" ? (resource() as { status: "ready"; value: { x: number } }).value.x : 0) - p.s.codeOffset(spec()!.code!.block) : 0 }} state={() => {
-      const state = resource();
-      return state.status === "ready" ? ready({ handle: state.value.handle, width: BODY_W, height: 16 }) : state;
-    }} fallback={() => <Skeleton width={180 - p.slot % 3 * 24} columns={spec()?.columns} />}
+    <ResourceImage class="absolute left-0 top-[2] w-[256] h-[16] overflow-hidden" style={{ translateX: spec()?.code ? (resource().status === "ready" ? (resource() as { status: "ready"; value: { x: number } }).value.x : 0) - p.s.codeOffset(spec()!.code!.block) : 0 }} state={resource}
+      fallback={() => <Skeleton width={180 - p.slot % 3 * 24} columns={spec()?.columns} />}
       errorFallback={() => <Text class="text-xs text-[#8b6f64]">Content unavailable</Text>} />
   </View>;
 }
@@ -75,7 +74,7 @@ function SourceRow(p: { s: Doc; index: number }) {
   const right = () => row() ? p.s.sourceWidth(row()!.text.slice(0, Math.max(0, p.s.selection()[1] - row()!.start))) : 0;
   return <View class="absolute left-0 w-[256] h-[18] overflow-hidden" style={{ translateY: index() * 18, display: index() < p.s.editorTotal() ? 0 : 1 }}>
     <View class="absolute top-0 h-[16] bg-[#bbd9ff]" style={{ insetL: left(), width: Math.max(0, right() - left()) }} />
-    <Show when={row()} fallback={<Skeleton width={180} />}><AsyncText s={p.s} value={() => row()?.text ?? ""} width={248} mono /></Show>
+    <Show when={row()} fallback={<Skeleton width={180} />}><AsyncText s={p.s} value={() => row()?.text ?? ""} active={() => p.s.mode() === "edit" && index() < p.s.editorFirst() + 10} width={248} mono /></Show>
   </View>;
 }
 

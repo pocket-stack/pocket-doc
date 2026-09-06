@@ -48,7 +48,7 @@ try {
   const s = globalThis.__doc;
   frames(60); check(s.mode()==="read", "offline mount failed");
   session=1; frames(100); s.setFocus("document"); frames(60,0,0x80ff); frames(60,0,0x8000);
-  check(s.total()===1000 && s.tiles.size>=24, "resource reveal failed");
+  check(s.total()===1000 && s.diagnostics().cachedTiles>=24, "resource reveal failed");
   failures=true; s.jump(0.5,"document"); frames(100);
   const row = Math.floor(s.scroll.offset()/20);
   check(s.rowResource(row).status==="error", "resource error fallback not exercised");

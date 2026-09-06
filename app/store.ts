@@ -1,16 +1,15 @@
 import { batch, createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
 import { createCaretBlink } from "@pocketjs/framework/animation";
 import { offload } from "@pocketjs/framework/offload";
-import { pending, ready, type ResourceState } from "@pocketjs/framework/resource-state";
+import { createResourceView } from "@pocketjs/framework/resource-view";
+import type { TextureResource } from "@pocketjs/framework/resource";
 import { onFrame, rightAnalogX, rightAnalogY } from "@pocketjs/framework/lifecycle";
 import { BTN } from "@pocketjs/framework/input";
 import { createScroller, bindDpadScroll } from "@pocketjs/framework/kinetics";
 import { getOps } from "@pocketjs/framework/host";
-import { textTileKey } from "./tiles.ts";
 import { createDocResources, tileDemand, type TileInput } from "./resources.ts";
 import { moveSourceCaret, sourceAdvance, sourceLayout, sourceWindow } from "./editor.ts";
 import { createEditHistory, type EditSnapshot } from "./history.ts";
-import { createRowChanges } from "./window.ts";
 import { BANKS, heldBank, moveCommand, moveListSelection, type Action, type Bank } from "./commands.ts";
 import { SOURCE_EDIT_CHARS, type SourceDraft, type DraftSeek } from "../shared/draft.ts";
 import { FILE_H, LINE_H, SOURCE_COLUMNS, SOURCE_FONT_SLOT, VIEW_H } from "../shared/layout.ts";
@@ -18,7 +17,7 @@ export type FileRow = { id: number; title: string; bytes: number };
 type Document = { id: number; title: string; revision: string; layout: string; rows: number; chars: number; mini: number[]; outline: { row: number; title: string }[]; links: string[] };
 type Draft = SourceDraft;
 export type RowSpec = { row: number; kind: number; columns?: number[]; header?: boolean; first?: boolean; last?: boolean; code?: { block: number; width: number } };
-export type Tile = { handle: number; kind: number; start: number; x: number };
+export type Tile = TextureResource & { kind: number; start: number; x: number };
 
 export function createDoc() {
   const io = offload();
@@ -61,22 +60,7 @@ export function createDoc() {
   const [confirmDiscard, setConfirmDiscard] = createSignal(false);
   const [caretVisible, setCaretVisible] = createSignal(false);
   const [caretDragging, setCaretDragging] = createSignal(false);
-  const [textVersion, setTextVersion] = createSignal(0);
-  const fileChanges = createRowChanges(), rowChanges = createRowChanges();
-  const resources = createDocResources(io, {
-    files: first => { for (let n = 0; n < 12; n++) fileChanges.notify(first + n); },
-    rows: first => { for (let n = 0; n < 12; n++) rowChanges.notify(first + n); },
-    tile: row => rowChanges.notify(row), text: () => setTextVersion(v => v + 1),
-  });
-  const rowSpecs = { get: (row: number) => doc() ? resources.row(doc()!, row) : undefined };
-  const tileInput = (row: number): TileInput => ({ id: doc()?.id ?? 0, revision: doc()?.revision ?? "", layout: doc()?.layout ?? "", row,
-    x: rowSpecs.get(row)?.code ? codeOffset(rowSpecs.get(row)!.code!.block) : 0 });
-  const tiles = {
-    get: (row: number) => { const state = resources.tiles.state(tileInput(row)); return state.status === "ready" ? state.value : undefined; },
-    has: (row: number) => resources.tiles.state(tileInput(row)).status === "ready",
-    get size() { return resources.tiles.stats().ready; },
-  };
-  const files = { get: (index: number) => resources.file(query(), index), has: (index: number) => !!resources.file(query(), index), clear: resources.lists.clear };
+  const resources = createDocResources(io);
   const sourceCellWidth = getOps().measureText("M", SOURCE_FONT_SLOT);
   const sourceWidth = (text: string) => sourceAdvance(text, sourceCellWidth);
   const rowsOf = (text: string, hasMore: boolean) => {
@@ -89,7 +73,6 @@ export function createDoc() {
   const editorTotal = () => (draft()?.totalRows ?? 1) + source().length - rowsOf(cleanText, (draft()?.end ?? 0) < (draft()?.chars ?? 0)).length;
   const editorScroll = createScroller({ max: () => Math.max(0, editorTotal() * 18 - 162), extent: () => 162 });
   const editorFirst = createMemo(() => Math.max(0, Math.floor(editorScroll.offset() / 18)));
-  const editorRows = createMemo(() => source().slice(Math.max(0, editorFirst() - editorBase()), Math.max(0, editorFirst() - editorBase() + 10)));
   const caretRow = createMemo(() => {
     const rows = source(), found = rows.findIndex(r => caret() >= r.start && caret() <= r.end);
     // A non-EOF window ending at a newline has a caret position at the start
@@ -117,21 +100,28 @@ export function createDoc() {
   const libraryScroll = createScroller({ max: () => Math.max(0, total() * FILE_H - VIEW_H), extent: () => VIEW_H });
   const firstRow = createMemo(() => Math.max(0, Math.floor(scroll.offset() / LINE_H)));
   const firstFile = createMemo(() => Math.max(0, Math.floor(libraryScroll.offset() / FILE_H)));
-  const visibleText = createMemo(() => {
-    const lines: { text: string; key: string; inverse: boolean }[] = [];
-    for (let n = 0; n < 9; n++) {
-      const index = firstFile() + n; fileChanges.read(index);
-      const title = files.get(index)?.title.slice(0, 17) ?? "";
-      const inverse = index === selected();
-      if (/[^\x00-\x7f]/.test(title)) lines.push({ text: title, key: textTileKey(title, inverse), inverse });
-    }
-    if (mode() === "edit") for (const row of editorRows()) if (/[^\x00-\x7f]/.test(row.text)) lines.push({ text: row.text, key: textTileKey(row.text), inverse: false });
-    return lines;
-  });
+  const pageInput = (index: number) => ({ query: query(), offset: Math.floor(index / 12) * 12 });
+  const lists = createResourceView(resources.lists, { demand: () => {
+    const page = pageInput(firstFile());
+    return [page.offset, page.offset + 12].filter(offset => offset === page.offset || offset < total())
+      .map((offset, priority) => ({ input: { ...page, offset }, priority, pin: true }));
+  } });
+  const fileAt = (index: number) => lists.value(pageInput(index))?.rows[index % 12];
+  const windows = createResourceView(resources.windows, { demand: () => {
+    const d = doc(), first = Math.floor(firstRow() / 12) * 12;
+    return !d || mode() === "edit" ? [] : [first, first + 12].filter(from => from < d.rows)
+      .map(first => ({ input: { id: d.id, revision: d.revision, layout: d.layout, first }, priority: 1, pin: true }));
+  } });
+  const rowSpec = (row: number) => { const d = doc(); return d ? windows.value({ id: d.id, revision: d.revision, layout: d.layout, first: Math.floor(row / 12) * 12 })?.find(s => s.row === row) : undefined; };
+  const tileInput = (row: number): TileInput => ({ id: doc()?.id ?? 0, revision: doc()?.revision ?? "", layout: doc()?.layout ?? "", row,
+    x: rowSpec(row)?.code ? codeOffset(rowSpec(row)!.code!.block) : 0 });
+  const tiles = createResourceView(resources.tiles, { demand: () => {
+    const d = doc(); return !d || mode() === "edit" ? [] : tileDemand(d, firstRow(), d.rows, lastDirection, row => tileInput(row).x);
+  } });
   const activeScroll = () => focus() === "library" ? libraryScroll : scroll;
   bindDpadScroll(scroll, { active: () => !sheetModal() && !menu() && focus() === "document" && mode() === "read", stepPx: 7, nubPx: 12 });
   bindDpadScroll(libraryScroll, { active: () => !sheetModal() && !menu() && focus() === "library", stepPx: 0, nubPx: 12 });
-  const clearPending = () => { resources.scheduler.cancel(); generation++; for (const id of inflight.values()) io.cancel(id); inflight.clear(); };
+  const clearPending = () => { resources.runtime.cancel(); generation++; for (const id of inflight.values()) io.cancel(id); inflight.clear(); };
   const cancelSpatial = (pane?: "library" | "document") => {
     resources.text.cancel();
     if (pane !== "document") resources.lists.cancel();
@@ -157,15 +147,11 @@ export function createDoc() {
   };
   const clearTiles = () => {
     codeOffsets.clear(); setCodeVersion(v => v + 1);
-    resources.tiles.clear(); resources.windows.clear(); rowChanges.clear();
+    resources.tiles.clear(); resources.windows.clear();
   };
-  const list = (offset = 0, refresh = false) => {
-    if (refresh) return request("refresh", "library.refresh", { offset, query: query() }, () => {
-      resources.lists.clear(); setLibraryReady(false);
-    });
-    resources.lists.reconcile([{ input: { offset, query: query() }, priority: 0, pin: true }]);
-    return true;
-  };
+  const refreshLibrary = () => request("refresh", "library.refresh", pageInput(firstFile()), () => {
+    resources.lists.clear(); setLibraryReady(false);
+  });
   const open = (id: number, preserve = false, focusAfter = true) => {
     if (dirty() || pendingSeek) { setStatus("Save or discard the current draft first"); return; }
     clearPending();
@@ -198,7 +184,7 @@ export function createDoc() {
     createOp ||= `create-${ticks}-${Math.floor(Math.random() * 1e9)}`;
     if (request("create", "document.create", { name: newName(), op: createOp }, p => {
       setCreating(false); clearTiles(); setDoc(p.document); adoptWindow(p.window, p.window.start);
-      files.clear(); fileChanges.clear(); setQuery(""); setTotal(p.total); setLibraryReady(true); setSelected(p.position);
+      resources.lists.clear(); setQuery(""); setTotal(p.total); setLibraryReady(true); setSelected(p.position);
       libraryScroll.scrollTo(p.position * FILE_H, { immediate: true }); editorScroll.scrollTo(0, { immediate: true }); scroll.scrollTo(0, { immediate: true });
       setMode("edit"); setFocus("document"); setStatus("Document created; ready to edit"); createOp = "";
     }, () => setCreating(false))) { setCreating(true); setStatus("Creating document..."); }
@@ -342,12 +328,12 @@ export function createDoc() {
     saveWanted = true; setSaving(true); setStatus("Saving document on Mac...");
   };
   const search = () => {
-    clearPending(); files.clear(); fileChanges.clear(); setTotal(0); setLibraryReady(false); setMode("read"); setFocus("library");
-    libraryScroll.scrollTo(0, { immediate: true }); setSelected(0); retryAt = 0; list();
+    clearPending(); resources.lists.clear(); setTotal(0); setLibraryReady(false); setMode("read"); setFocus("library");
+    libraryScroll.scrollTo(0, { immediate: true }); setSelected(0); retryAt = 0;
   };
   const ensureSelected = () => setSelected(moveListSelection(selected(), 0, libraryScroll.offset(), VIEW_H, total(), FILE_H));
   const activate = () => {
-    if (focus() === "library") { ensureSelected(); const file = files.get(selected()); if (file) open(file.id); }
+    if (focus() === "library") { ensureSelected(); const file = fileAt(selected()); if (file) open(file.id); }
     else edit();
   };
   const jump = (fraction: number, pane = focus()) => {
@@ -377,7 +363,7 @@ export function createDoc() {
   };
   const beginDelete = () => {
     if (!canAction("delete")) return;
-    ensureSelected(); const file = files.get(selected()); if (!file) { setStatus("Wait for the file list"); return; }
+    ensureSelected(); const file = fileAt(selected()); if (!file) { setStatus("Wait for the file list"); return; }
     request("delete-info", "document.stat", { id: file.id }, p => {
       scroll.stop(); libraryScroll.stop(); editorScroll.stop(); setCaretDragging(false);
       setDeleteTarget({ ...p, op: `delete-${p.id}-${ticks}-${Math.floor(Math.random() * 1e9)}` });
@@ -392,10 +378,10 @@ export function createDoc() {
         clearTiles(); setDoc(undefined); setDraft(undefined); setDirty(false); setMode("read");
         history.clear(); setHistorySizes(history.sizes()); setSelecting(false); scroll.scrollTo(0, { immediate: true });
       }
-      files.clear(); fileChanges.clear(); const count = Math.max(0, total() - 1);
+      resources.lists.clear(); const count = Math.max(0, total() - 1);
       setTotal(count); setLibraryReady(true); setSelected(Math.max(0, Math.min(selected(), count - 1)));
       libraryScroll.scrollTo(selected() * FILE_H, { immediate: true }); setFocus("library");
-      setStatus("Document deleted"); if (count) list(Math.floor(selected() / 12) * 12);
+      setStatus("Document deleted");
     }, () => setRemoving(false))) { setRemoving(true); setStatus("Deleting document on Mac..."); }
   };
   const perform = (action: Action) => {
@@ -403,12 +389,12 @@ export function createDoc() {
     switch (action) {
       case "new": if (!dirty() && !pendingSeek && !discardToken()) { setNewName(""); setMode("create"); setFocus("document"); scroll.stop(); libraryScroll.stop(); } break;
       case "delete": beginDelete(); break;
-      case "open": ensureSelected(); { const item = files.get(selected()); if (item) open(item.id); } break;
+      case "open": ensureSelected(); { const item = fileAt(selected()); if (item) open(item.id); } break;
       case "focus-document": setFocus("document"); break;
       case "search": setMode("search"); setFocus("library"); break;
       case "undo": if (mode() === "edit" && draft() && !saving()) { const value = history.undo(snapshot()); if (value) restore(value); else if (draft()!.text === cleanText) wantWindow = { history: -1 }; } break;
       case "redo": if (mode() === "edit" && draft() && !saving()) { const value = history.redo(snapshot()); if (value) restore(value); else if (draft()!.text === cleanText) wantWindow = { history: 1 }; } break;
-      case "refresh": resources.tiles.invalidate(); resources.windows.invalidate(); resources.text.invalidate(); clearPending(); files.clear(); fileChanges.clear(); setLibraryReady(false); retryAt = 0; list(Math.floor(firstFile() / 12) * 12, true); break;
+      case "refresh": resources.tiles.invalidate(); resources.windows.invalidate(); resources.text.invalidate(); clearPending(); resources.lists.clear(); setLibraryReady(false); retryAt = 0; refreshLibrary(); break;
       case "edit": edit(); break;
       case "read": setMode("read"); setSelecting(false); setAnchor(caret()); setCaretDragging(false); setStatus(dirty() ? "Draft retained; tap Edit to continue" : "L: Files   R: Document"); break;
       case "save": save(); break;
@@ -428,7 +414,7 @@ export function createDoc() {
   };
   const codeOffset = (block: number) => { codeVersion(); return codeOffsets.get(block) ?? 0; };
   const firstCode = () => {
-    for (let n = firstRow(); n < firstRow() + 10; n++) { rowChanges.read(n); const code = rowSpecs.get(n)?.code; if (code) return code; }
+    for (let n = firstRow(); n < firstRow() + 10; n++) { const code = rowSpec(n)?.code; if (code) return code; }
   };
   const canAction = (action: Action): boolean => {
     if (sheetModal() || saving() || creating()) return false;
@@ -452,7 +438,7 @@ export function createDoc() {
     ticks++; setOnline(io.connected());
     const session = io.session();
     if (session > 0 && session !== lastSession) {
-      lastSession = session; resources.tiles.invalidate(); resources.windows.invalidate(); resources.text.invalidate(); clearPending(); files.clear(); fileChanges.clear(); setLibraryReady(false); retryAt = 0; setSaving(false); saveWanted = false; setCreating(false); setRemoving(false);
+      lastSession = session; resources.tiles.invalidate(); resources.windows.invalidate(); resources.text.invalidate(); clearPending(); resources.lists.clear(); setLibraryReady(false); retryAt = 0; setSaving(false); saveWanted = false; setCreating(false); setRemoving(false);
       setStatus(dirty() ? "Reconnected - draft retained" : "L: Library   R: Document");
       const current = doc();
       if (current && !deleteTarget()) request("revalidate", "document.open", { id: current.id }, p => {
@@ -535,37 +521,21 @@ export function createDoc() {
     if (!online()) { if (!saving()) setStatus(dirty() ? "Offline - draft retained" : "Waiting for paired Mac..."); return; }
     if (discardToken()) { const token = discardToken(); request("discard", "draft.discard", { token }, () => { if (discardToken() === token) setDiscardToken(undefined); }); }
     pumpEditor();
-    const firstFile = Math.max(0, Math.floor(libraryScroll.offset() / FILE_H)), page = Math.floor(firstFile / 12) * 12;
-    const pages = [{ input: { query: query(), offset: page }, priority: 0, pin: true }];
-    if (total() > page + 12) pages.push({ input: { query: query(), offset: page + 12 }, priority: 1, pin: true });
-    resources.lists.reconcile(pages);
-    const listing = resources.lists.state(pages[0].input);
-    if (listing.status === "ready") {
-      setTotal(listing.value.total); setLibraryReady(true);
-      if (!doc() && !inflight.has("open") && listing.value.rows[0] && mode() !== "search") open(files.get(selected())?.id ?? listing.value.rows[0].id, false, false);
+    const listing = lists.value(pageInput(firstFile()));
+    if (listing) {
+      setTotal(listing.total); setLibraryReady(true);
+      if (!doc() && !inflight.has("open") && listing.rows[0] && mode() !== "search") open(fileAt(selected())?.id ?? listing.rows[0].id, false, false);
     }
-    resources.text.reconcile(visibleText().map(line => ({ input: { text: line.text, inverse: line.inverse, cellWidth: sourceCellWidth }, priority: 2, pin: true })));
-    const d = doc();
-    if (!d || mode() === "edit") { resources.windows.reconcile([]); resources.tiles.reconcile([]); return; }
-    const first = Math.max(0, Math.floor(scroll.offset() / LINE_H)), metadata = Math.floor(first / 12) * 12;
-    resources.windows.reconcile([metadata, metadata + 12].filter(from => from < d.rows).map(from => ({
-      input: { id: d.id, revision: d.revision, layout: d.layout, first: from }, priority: 1, pin: true,
-    })));
-    resources.tiles.reconcile(tileDemand({ id: d.id, revision: d.revision, layout: d.layout }, first, d.rows, lastDirection,
-      row => rowSpecs.get(row)?.code ? codeOffset(rowSpecs.get(row)!.code!.block) : 0));
   });
-  onFrame(() => resources.scheduler.step());
-  onCleanup(() => { clearPending(); resources.scheduler.dispose(); });
+  onCleanup(clearPending);
   return {
-    mode, setMode, focus, setFocus, menu, commandIndex, canAction, sheetModal, setSheetModal, historySizes, historyBusy, status, online, total, libraryReady, deleteTarget, removing, removeDocument, cancelDelete, textVersion, doc, draft, caret, query, shift, symbols, selected, setSelected,
+    mode, setMode, focus, setFocus, menu, commandIndex, canAction, sheetModal, setSheetModal, historySizes, historyBusy, status, online, total, libraryReady, deleteTarget, removing, removeDocument, cancelDelete, doc, draft, caret, query, shift, symbols, selected, setSelected,
     newName, creating, createDocument, cancelCreate, seeking, seekEditor, discardToken, codeOffset, firstCode, editorBase, editorTotal, caretX, firstRow, firstFile, source, sourceCellWidth, sourceWidth, editorFirst, editorScroll, caretRow, caretVisible, caretDragging, setCaretDragging, dragCaret,
-    tiles, rowSpecs, files, editorRows, sourceLines, scroll, libraryScroll, activeScroll, dirty, saving, selecting, selection, confirmDiscard,
+    text: resources.text, sourceLines, scroll, libraryScroll, activeScroll, dirty, saving, selecting, selection, confirmDiscard,
     key, moveCaret, save, search, activate, edit, jump, open, nextHeading, followLink, toggleSelect, perform, discard, cancelDiscard,
-    rowSpec: (row: number) => { rowChanges.read(row); return rowSpecs.get(row); },
-    rowResource: (row: number): ResourceState<Tile> => { rowChanges.read(row); return resources.tiles.state(tileInput(row)); },
-    fileResource: (index: number): ResourceState<FileRow> => { fileChanges.read(index); const file = files.get(index); return file ? ready(file) : pending(); },
-    textResource: (text: string, inverse = false): ResourceState<number> => { textVersion(); return resources.text.state({ text, inverse, cellWidth: sourceCellWidth }); },
-    diagnostics: () => ({ cachedTiles: tiles.size, textTiles: resources.text.stats().ready, resourceSlots: resources.tiles.stats().entries, pending: io.pending(), offset: scroll.offset(), frame: ticks, sourceChars: draft()?.text.length ?? 0, deferredKeys: deferredKeys.length }),
+    rowSpec, rowResource: (row: number) => tiles.state(tileInput(row)),
+    fileResource: (index: number) => lists.state(pageInput(index), page => page.rows[index % 12]),
+    diagnostics: () => ({ cachedTiles: resources.tiles.stats().ready, textTiles: resources.text.stats().ready, resourceSlots: resources.tiles.stats().entries, pending: io.pending(), offset: scroll.offset(), frame: ticks, sourceChars: draft()?.text.length ?? 0, deferredKeys: deferredKeys.length }),
   };
 }
 export type Doc = ReturnType<typeof createDoc>;

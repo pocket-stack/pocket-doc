@@ -5,7 +5,7 @@ The current generated corpus has **1,000 Markdown files**, from **114,690** to
 The interaction replay copies that corpus into `dist/qa/replay-library/`; its
 create and save checks never write the paired Mac's live library.
 
-## Shared resource refactor on Solid 1
+## Scoped resource views on Solid 1
 
 The runtime pin uses **Solid 1.9.14** and the main branch's unchanged lockfile.
 The application adopts shared scheduling/cache ownership without changing its
@@ -16,7 +16,7 @@ this resource-only build.
 All **28 application tests / 671 assertions**, TypeScript, production guest and
 pinned-toolchain native ARM build checks pass. The **839-frame QuickJS replay
 passes at 128 KiB**. The native 3DS host remains at 384 KiB. QuickJS allocates
-1,308 native node IDs and uploads 201 textures during that replay.
+1,414 native node IDs and uploads 210 textures during that replay.
 
 The isolated **3,231-frame / 93-check** interaction replay uses four-frame
 provider latency and keeps requests within **four**, Markdown textures within
@@ -33,10 +33,16 @@ check on Mac, not a physical frame-time benchmark.
 | Build | Guest JS bytes | Native binary bytes | Passing QuickJS stack check |
 | --- | ---: | ---: | ---: |
 | Main before resource extraction | 250,723 | 1,694,848 | 128 KiB |
-| Shared resources / Solid 1 | 265,145 | 1,709,424 | 128 KiB |
+| First extraction / Solid 1 | 265,145 | 1,709,424 | 128 KiB |
+| Scoped views / Solid 1 | 269,552 | 1,713,840 | 128 KiB |
 
-The guest adds **14,422 bytes (5.8%)** for shared admission, caching, retry and
-ownership. No rendering speedup is claimed. The new native binary has not been
+Scoped views add **4,407 guest bytes (1.7%)** over the first extraction, and
+**18,829 bytes (7.5%)** over main before extraction. The affected application
+files shrink from **937 to 891 physical lines** (46 fewer); the same files on
+main contained 893 lines. Notification lanes, version signals, the central
+Unicode demand scan and cache compatibility wrappers are removed. The frame
+mutation counts above are unchanged from the first extraction. No rendering
+speedup is claimed. The new native binary has not been
 installed on the 3DS. Existing screenshot/deployment records below describe the
 previously shipped demo. See [resource ownership](RESOURCES.md) for the API and
 application/provider responsibilities.
